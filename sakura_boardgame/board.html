@@ -1,0 +1,1320 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>樱的桌游室</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #eef3fb;
+    --panel: rgba(255, 255, 255, 0.88);
+    --panel-line: rgba(120, 150, 200, 0.22);
+    --ink: #3a415c;
+    --ink-dim: #7a829e;
+    --pink: #f2a7bd;
+    --pink-deep: #e07a9a;
+    --blue: #6fa8dc;
+    --blue-deep: #4a86c8;
+    --gold: #f0b429;
+    --green: #67c58f;
+    --danger: #e8637e;
+    --shadow: 0 6px 22px rgba(90, 120, 180, 0.16);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body { background: var(--bg); color: var(--ink); font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; overflow: hidden; }
+  body::before {
+    content: ""; position: fixed; inset: 0; z-index: 0;
+    background:
+      radial-gradient(circle at 10% 12%, rgba(111,168,220,0.30), transparent 30%),
+      radial-gradient(circle at 90% 10%, rgba(242,167,189,0.28), transparent 28%),
+      radial-gradient(circle at 80% 92%, rgba(240,180,41,0.20), transparent 32%),
+      radial-gradient(circle at 18% 88%, rgba(103,197,143,0.18), transparent 30%),
+      linear-gradient(165deg, #f4f8fd, #e6eefa);
+  }
+  #app { position: relative; z-index: 1; display: flex; flex-direction: column; height: 100vh; padding: 14px 20px; gap: 12px; }
+
+  header { display: flex; align-items: center; gap: 14px; }
+  header h1 { font-size: 24px; letter-spacing: 4px; font-weight: 700;
+    background: linear-gradient(90deg, var(--blue-deep), var(--pink-deep));
+    -webkit-background-clip: text; background-clip: text; color: transparent; }
+  header .sub { color: var(--ink-dim); font-size: 12px; letter-spacing: 2px; }
+  #tabs { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  #tabs button {
+    border: 2px solid transparent; background: rgba(255,255,255,0.75); color: var(--ink-dim);
+    padding: 6px 18px; border-radius: 999px; font-size: 14px; cursor: pointer; letter-spacing: 2px;
+    transition: all .18s; box-shadow: 0 2px 8px rgba(90,120,180,0.10);
+  }
+  #tabs button:hover { color: var(--ink); transform: translateY(-1px); }
+  #tabs button.on { background: linear-gradient(120deg, var(--blue), var(--pink)); color: #fff; letter-spacing: 3px; }
+  #tabs button .live-dot {
+    display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+    background: var(--gold); margin-left: 6px; vertical-align: middle;
+    box-shadow: 0 0 6px rgba(240,180,41,0.8);
+  }
+  #tabs .help-btn { background: rgba(255,255,255,0.75); }
+
+  main { display: flex; gap: 16px; flex: 1; min-height: 0; }
+
+  /* ---------- 棋盘区 ---------- */
+  #board-wrap {
+    flex: 1; min-width: 0; position: relative;
+    background: linear-gradient(165deg, rgba(255,255,255,0.92), rgba(240,245,252,0.86));
+    border: 1px solid var(--panel-line); border-radius: 18px;
+    box-shadow: var(--shadow); overflow: hidden;
+  }
+  #map-viewport { position: absolute; inset: 0; cursor: grab; touch-action: none;
+    user-select: none; -webkit-user-select: none; }
+  #map-viewport.dragging { cursor: grabbing; }
+  #map-canvas { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+  #edges-svg { position: absolute; left: 0; top: 0; pointer-events: none; }
+  #map-canvas .watermark {
+    position: absolute; text-align: center; pointer-events: none; z-index: 0;
+    white-space: nowrap;
+  }
+  #map-canvas .watermark .big { font-size: 52px; letter-spacing: 14px; color: rgba(74,134,200,0.055); font-weight: 800; }
+  #map-canvas .watermark .small { font-size: 15px; letter-spacing: 6px; color: rgba(120,150,200,0.09); font-weight: 700; margin-top: 6px; }
+  #map-canvas text.district-name {
+    font-size: 34px; font-weight: 800; letter-spacing: 10px; opacity: 0.34; text-anchor: middle;
+    dominant-baseline: middle; pointer-events: none;
+    paint-order: stroke; stroke: rgba(255,255,255,0.8); stroke-width: 5px;
+  }
+  .demo-badge, .live-badge {
+    position: absolute; left: 14px; bottom: 12px; z-index: 12; color: #fff; font-size: 12px;
+    letter-spacing: 2px; border-radius: 999px; padding: 3px 12px;
+  }
+  .demo-badge { background: var(--gold); box-shadow: 0 2px 8px rgba(240,180,41,0.4); }
+  .live-badge { background: var(--green); box-shadow: 0 2px 8px rgba(103,197,143,0.4); }
+  #zoom-hint { position: absolute; right: 14px; bottom: 12px; z-index: 12; font-size: 11px; color: var(--ink-dim);
+    background: rgba(255,255,255,0.85); border-radius: 999px; padding: 3px 10px; }
+
+  /* ---------- 地标 = 地图图钉（钉尖指向路线上的点，路线不被盖住） ---------- */
+  .cell {                                  /* 图钉容器：底边中点钉在路线节点上 */
+    position: absolute;
+    /* 往上抬 PIN_LIFT：钉尖落在路面**边缘**而不是路中心，所有图钉与路的间距就统一了 */
+    transform: translate(-50%, calc(-100% - 22px));
+    transform-origin: 50% 100%;
+    display: flex; flex-direction: column; align-items: center;
+    z-index: 3; will-change: transform; transition: transform .18s ease-out;
+    cursor: default;
+  }
+  .cell .pin-chip {                        /* 名称 + 价格的小牌，在图钉上方 */
+    display: flex; align-items: center; gap: 4px; white-space: nowrap;
+    background: rgba(255,255,255,0.97); border-radius: 8px; padding: 3px 8px 4px;
+    font-size: 12.5px; font-weight: 700; color: var(--ink);
+    box-shadow: 0 2px 6px rgba(45,75,125,0.26);
+  }
+  .cell .pin-chip .band { width: 4px; height: 13px; border-radius: 2px; background: #999; flex: none; }
+  .cell .pin-chip .price { color: #c98a10; font-weight: 800; }
+  .cell .pin-chip .sub { font-size: 11px; color: var(--ink-dim); font-weight: 700; }
+  .cell .pin-chip .owner-tag {
+    background: var(--blue-deep); color: #fff; border-radius: 999px;
+    padding: 0 6px; font-size: 11px; font-weight: 700;
+  }
+  .cell .pin-thumb {                       /* 图钉本体 */
+    position: relative; width: 62px; height: 62px; border-radius: 15px;
+    background: #fff; border: 3px solid var(--ring, #9bb4d4);
+    box-shadow: 0 4px 10px rgba(45,75,125,0.30);
+    display: flex; align-items: center; justify-content: center; overflow: hidden;
+  }
+  .cell .pin-thumb svg.cell-icon { width: 40px; height: 40px; display: block; }
+  .cell .pin-thumb img.poi-img {           /* AI 地标插图（已裁掉白边，主体填满图钉） */
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: cover; object-position: center; border-radius: inherit;
+  }
+  .cell .pin-tail {                        /* 三角钉尖 */
+    width: 0; height: 0; margin-top: -1px;
+    border-left: 7px solid transparent; border-right: 7px solid transparent;
+    border-top: 10px solid var(--ring, #9bb4d4);
+    filter: drop-shadow(0 1px 1px rgba(45,75,125,0.3));
+  }
+  .cell.badge .pin-thumb { width: 38px; height: 38px; border-radius: 50%; }
+  .cell.badge .pin-thumb svg.cell-icon { width: 27px; height: 27px; }
+  .cell.badge .pin-tail { border-top-width: 9px; }
+  .cell.start .pin-thumb {
+    width: 52px; height: 52px; border-radius: 50%;
+    background: linear-gradient(160deg, #fffaea, #fde9b8); border-color: var(--gold);
+  }
+  .cell.start .pin-thumb svg.cell-icon { width: 36px; height: 36px; }
+  .cell:hover .pin-thumb { border-color: var(--pink-deep); box-shadow: 0 6px 16px rgba(224,122,154,0.4); }
+  .cell.owned .pin-chip { box-shadow: 0 0 0 2px rgba(240,180,41,0.55), 0 2px 6px rgba(45,75,125,0.26); }
+  .cell.owned .pin-thumb { border-color: var(--gold); }
+  .cell.mortgaged { opacity: 0.5; }
+  .pdot {                                  /* 钉尖落点：路线上的锚点 */
+    position: absolute; width: 10px; height: 10px; border-radius: 50%;
+    background: #fff; border: 2.6px solid var(--ring, #9bb4d4);
+    transform: translate(-50%, -50%); z-index: 2;
+    box-shadow: 0 1px 3px rgba(45,75,125,0.35);
+  }
+  .pdot.start { border-color: var(--gold); background: #fff6dd; }
+
+  /* ---------- 随机地图：圆圈 = 格子（参考手画路线图），线从圆里穿过 ---------- */
+  #map-canvas.organic .cell .pin-thumb { border-radius: 50%; }
+  #map-canvas.organic .cell .pin-tail { display: none; }
+  #map-canvas.organic .cell .pin-chip { margin-bottom: 3px; }
+  #map-canvas.organic .pdot { border-radius: 50%; }
+
+  /* 侧栏选项（五子棋难度/棋风、地图来源）：一行一组，按钮之间有间距 */
+  .opt-line { display: flex; align-items: center; gap: 10px; margin: 7px 0; }
+  .opt-label { flex: none; font-size: 12px; color: var(--ink-dim); }
+  .opt-row { display: inline-flex; gap: 9px; flex-wrap: wrap; }
+  .opt-btn {
+    padding: 5px 14px; border-radius: 999px; border: 1px solid var(--panel-line);
+    cursor: pointer; font-size: 12px; font-family: inherit; transition: background .15s ease;
+  }
+  #map-switch { padding: 6px 14px 10px; border-top: 1px dashed var(--panel-line); }
+  /* 棋子：移动时沿路径逐格跳动 */
+  /* ---------- 棋子头像：够大，缩放地图时会按比例放大，任何缩放下都看得见 ---------- */
+  .token {
+    position: absolute; width: 54px; height: 54px; border-radius: 50%;
+    transform: translate(-50%, -50%); z-index: 6;
+    border: 3px solid #fff; box-shadow: 0 4px 12px rgba(60,90,150,0.45);
+    object-fit: cover; object-position: center;
+    background: #dfe8f4;
+    transition: left .12s linear, top .12s linear;
+  }
+  .token.sakura { border-color: var(--pink); }
+  .token.user { border-color: var(--blue); }
+  .token.active-turn {                       /* 当前行动方：一圈呼吸光晕 */
+    box-shadow: 0 0 0 4px rgba(240,180,41,0.55), 0 4px 12px rgba(60,90,150,0.45);
+    animation: turnpulse 1.6s ease-in-out infinite;
+  }
+  @keyframes turnpulse {
+    0%, 100% { box-shadow: 0 0 0 4px rgba(240,180,41,0.55), 0 4px 12px rgba(60,90,150,0.45); }
+    50% { box-shadow: 0 0 0 9px rgba(240,180,41,0.18), 0 4px 12px rgba(60,90,150,0.45); }
+  }
+  #move-svg { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 5; overflow: visible; }
+
+  /* 操作条：置于棋盘上方，点起来顺手 */
+  #action-bar {
+    position: absolute; left: 0; right: 0; top: 0; z-index: 10;
+    display: flex; gap: 10px; justify-content: center; align-items: center;
+    padding: 12px; flex-wrap: wrap;
+    background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(255,255,255,0.0));
+  }
+  #action-bar button {
+    border: none; border-radius: 999px; padding: 9px 22px; font-size: 14px; font-weight: 700;
+    letter-spacing: 2px; cursor: pointer; color: #fff; box-shadow: 0 4px 12px rgba(74,134,200,0.35);
+    background: linear-gradient(120deg, var(--blue), var(--blue-deep)); transition: transform .15s, filter .15s;
+  }
+  #action-bar button:hover { transform: translateY(-2px); filter: brightness(1.06); }
+  #action-bar button:disabled { filter: grayscale(0.6); opacity: 0.55; cursor: not-allowed; transform: none; }
+  #action-bar button.pink { background: linear-gradient(120deg, var(--pink), var(--pink-deep)); box-shadow: 0 4px 12px rgba(224,122,154,0.35); }
+  #action-bar button.gold { background: linear-gradient(120deg, #f6c85a, var(--gold)); box-shadow: 0 4px 12px rgba(240,180,41,0.35); }
+  #action-bar button.ghost { background: rgba(255,255,255,0.9); color: var(--ink); box-shadow: 0 2px 8px rgba(90,120,180,0.2); }
+  #action-bar .hint { font-size: 12px; color: var(--ink-dim); background: rgba(255,255,255,0.85);
+    padding: 6px 12px; border-radius: 999px; }
+
+  /* 五子棋：暖木色棋盘，白子深描边以保证对比 */
+  #gomoku { display: flex; align-items: center; justify-content: center; gap: 26px; height: 100%; padding: 56px 0 40px; }
+  #gomoku table { border-collapse: collapse; background: #e9d3ac;
+    border: 6px solid #d8bd90; border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; cursor: pointer; }
+  #gomoku td { width: var(--gcell, 40px); height: var(--gcell, 40px);
+    border: 1px solid rgba(146,113,66,0.35); position: relative; padding: 0; }
+  #gomoku td.head { border: none; background: transparent; font-size: 10px; color: #8a6f45;
+    text-align: center; cursor: default; font-weight: 700; }
+  #gomoku td.playable:hover { background: rgba(224,122,154,0.22); }
+  #gomoku td .stone { position: absolute; inset: 3px; border-radius: 50%; }
+  #gomoku td .stone.user {
+    background: radial-gradient(circle at 34% 28%, #ffffff, #e6edf7 60%, #c7d4e4);
+    border: 1.5px solid #8fa2ba; box-shadow: 0 2px 4px rgba(80,60,30,.35);
+  }
+  #gomoku td .stone.sakura {
+    background: radial-gradient(circle at 34% 28%, #7d869f, #39415c 55%, #232941);
+    border: 1.5px solid #1c2135; box-shadow: 0 2px 4px rgba(80,60,30,.35);
+  }
+  #gomoku .legend { text-align: center; color: #8a6f45; font-size: 13px; font-weight: 700; }
+
+  /* ---------- 侧栏 ---------- */
+  #panel { width: 330px; flex: none; display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+  .card { background: var(--panel); border: 1px solid var(--panel-line); border-radius: 16px; padding: 12px 14px;
+    box-shadow: 0 3px 12px rgba(90,120,180,0.10); }
+  .card h3 { font-size: 11px; color: var(--ink-dim); letter-spacing: 3px; margin-bottom: 8px; font-weight: 700; }
+  .player-row { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+  .player-row img, .player-row .avatar-fallback {
+    width: 44px; height: 44px; border-radius: 50%; object-fit: cover; object-position: center;
+    border: 2.5px solid var(--panel-line); background: #dfe8f4; flex: none;
+  }
+  .player-row .pinfo { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .player-row .who { font-size: 15px; font-weight: 700; }
+  .player-row .own { font-size: 11px; color: var(--ink-dim); line-height: 1.35; }
+  .player-row .cash { margin-left: auto; font-size: 19px; color: var(--gold); font-weight: 800; }
+  .player-row.active .who::after { content: " · 行动中"; color: var(--pink-deep); font-size: 11px; font-weight: 500; }
+  .player-row.winner .who::after { content: " · 获胜"; color: var(--gold); font-size: 11px; font-weight: 700; }
+
+  #dice-card { display: flex; align-items: center; gap: 14px; min-height: 74px; }
+  .die { width: 54px; height: 54px; border-radius: 12px; flex: none;
+    background: linear-gradient(150deg, #ffffff, #e8effa);
+    border: 1px solid var(--panel-line);
+    box-shadow: 0 4px 12px rgba(90,120,180,0.25), inset 0 -3px 0 rgba(120,150,200,0.25);
+    display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 1fr); padding: 7px; }
+  .die.rolling { animation: shake .7s ease; }
+  @keyframes shake {
+    0% { transform: rotate(0) scale(1); }
+    20% { transform: rotate(-16deg) scale(1.12); }
+    45% { transform: rotate(14deg) scale(1.08); }
+    70% { transform: rotate(-8deg) scale(1.04); }
+    100% { transform: rotate(0) scale(1); }
+  }
+  .die .pip { border-radius: 50%; }
+  .die .pip.on { background: linear-gradient(140deg, var(--pink-deep), var(--blue-deep)); box-shadow: inset 0 -1px 2px rgba(0,0,0,0.25); }
+  #dice-info { font-size: 13px; color: var(--ink); line-height: 1.6; }
+  #dice-info .who { font-weight: 700; }
+  #dice-info .sub { color: var(--ink-dim); font-size: 11px; }
+
+  .mini { font-size: 12px; color: var(--ink-dim); line-height: 1.8; }
+  .mini .g { color: var(--gold); font-weight: 700; }
+  #log { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 5px; scrollbar-width: thin; }
+  #log div { font-size: 12px; line-height: 1.55; color: var(--ink-dim); border-left: 3px solid var(--panel-line); padding-left: 9px; border-radius: 2px; }
+  #log div.navi { color: var(--blue-deep); border-left-color: var(--blue); background: rgba(111,168,220,0.08); }
+  #log div.warn { color: var(--danger); border-left-color: var(--danger); background: rgba(232,99,126,0.07); }
+  #log div.win { color: var(--gold); border-left-color: var(--gold); background: rgba(240,180,41,0.10); }
+
+  /* 弹窗（事件卡/帮助） */
+  .modal { position: fixed; inset: 0; display: none; place-items: center; z-index: 50;
+    background: rgba(90,110,150,0.25); backdrop-filter: blur(3px); }
+  .modal.show { display: grid; }
+  .e-card { width: 350px; padding: 26px 26px 22px; border-radius: 20px;
+    background: linear-gradient(165deg, #ffffff, #eef4fd 75%);
+    border: 1px solid rgba(111,168,220,0.5); box-shadow: 0 0 60px rgba(111,168,220,0.4);
+    animation: flip .55s ease; }
+  @keyframes flip { 0% { transform: rotateY(90deg) scale(.85); opacity: 0; } 100% { transform: rotateY(0) scale(1); opacity: 1; } }
+  .e-card .from { font-size: 11px; color: var(--blue-deep); letter-spacing: 3px; margin-bottom: 10px; font-weight: 700; }
+  .e-card .title { font-size: 22px; color: var(--ink); margin-bottom: 12px; font-weight: 800; }
+  .e-card .flavor { font-size: 13px; line-height: 1.9; color: var(--ink-dim); }
+  .e-card.win { border-color: rgba(240,180,41,0.6); box-shadow: 0 0 60px rgba(240,180,41,0.4); }
+  .e-card.win .from { color: var(--gold); }
+
+  #help-modal .help-box { width: min(760px, 92vw); max-height: 86vh; overflow-y: auto; padding: 24px 26px;
+    border-radius: 20px; background: #fff; border: 1px solid var(--panel-line); box-shadow: var(--shadow); }
+  #help-modal h2 { font-size: 18px; color: var(--ink); margin-bottom: 12px; }
+  #help-modal h4 { font-size: 13px; color: var(--blue-deep); margin: 16px 0 8px; letter-spacing: 2px; }
+  #help-modal p, #help-modal li { font-size: 12.5px; color: var(--ink-dim); line-height: 1.8; }
+  .legend-grid { display: flex; flex-wrap: wrap; gap: 10px; }
+  .legend-grid .lg { display: flex; align-items: center; gap: 8px; width: 46%; font-size: 12px; color: var(--ink);
+    background: rgba(111,168,220,0.07); border-radius: 10px; padding: 6px 10px; }
+  .legend-grid .lg svg { width: 30px; height: 30px; flex: none; }
+  .cards-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .cards-grid .cd { background: rgba(111,168,220,0.07); border-radius: 12px; padding: 10px 12px; }
+  .cards-grid .cd .t { font-size: 13px; font-weight: 700; color: var(--ink); }
+  .cards-grid .cd .e { font-size: 11px; color: var(--gold); font-weight: 700; margin: 2px 0 4px; }
+  .cards-grid .cd .f { font-size: 11.5px; color: var(--ink-dim); line-height: 1.6; }
+
+  #toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); z-index: 60;
+    background: rgba(58,65,92,0.92); color: #fff; font-size: 13px; padding: 9px 18px; border-radius: 999px;
+    display: none; box-shadow: 0 4px 14px rgba(0,0,0,0.3); }
+
+  /* 空状态 */
+  #empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 10px; color: var(--ink-dim); }
+  #empty img { height: 190px; border-radius: 16px; }
+  #empty .t1 { font-size: 22px; color: var(--pink-deep); letter-spacing: 4px; font-weight: 700; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>桜のボードゲーム室</h1>
+    <span class="sub">樱的桌游室</span>
+    <div id="tabs"></div>
+  </header>
+  <main>
+    <div id="board-wrap"></div>
+    <aside id="panel">
+      <div class="card"><h3>玩家</h3><div id="players"></div></div>
+      <div class="card" id="map-switch">
+        <h3>地图来源</h3>
+        <div class="opt-row" id="map-switch-row"></div>
+        <div class="sub" style="font-size:11px;margin-top:6px">切换后**下一局**生效（当前对局不受影响）。</div>
+      </div>
+      <div class="card" id="dice-card"><div class="die" id="die"></div><div id="dice-info"><span class="sub">等待第一声骰响…</span></div></div>
+      <div class="card" id="info-card" style="display:none"><h3>对局信息</h3><div class="mini" id="info"></div></div>
+      <div class="card" style="flex:1;display:flex;flex-direction:column;min-height:0">
+        <h3>对局记录</h3>
+        <div id="log"></div>
+      </div>
+    </aside>
+  </main>
+</div>
+<div class="modal" id="card-modal"><div class="e-card" id="e-card">
+  <div class="from" id="e-card-from">NAVI 通知</div>
+  <div class="title" id="e-card-title"></div>
+  <div class="flavor" id="e-card-flavor"></div>
+</div></div>
+<div class="modal" id="help-modal"><div class="help-box" id="help-box"></div></div>
+<div id="toast"></div>
+
+<script>
+const state = { version: 0, game: null, cards: [], edges: null, stats: null, difficulty: 2, style: 45,
+  log: [], lastEvent: null, tab: null, helpOpen: false, decor: null, mapTemplate: null,
+  mainPath: null, branches: null, moves: null, organic: false, settingMapKind: null,
+  lastRoll: null };
+const $ = (sel) => document.querySelector(sel);
+const boardWrap = $("#board-wrap");
+const NAMES = { user: "玩家", sakura: "夜乃樱" };
+const GAMES = { monopoly: "大富翁", gomoku: "五子棋" };
+const SPACING = 132;
+
+const GROUPS = {
+  shopping: { label: "街市", color: "#d95a72" },
+  gakuen: { label: "学园区", color: "#4a8bc9" },
+  daily: { label: "住宅区", color: "#3f9e83" },
+  taboo: { label: "荒废街区", color: "#4a5470" },
+};
+
+const ICONS = {
+  /* 地产：通用店面图标（每个地标的专属插画后续再接进来） */
+  property: `<svg class="cell-icon" viewBox="0 0 48 48"><path d="M8 20 L24 9 L40 20 Z" fill="#5b7ba6"/><path d="M11 20 h26 v19 a2 2 0 0 1 -2 2 H13 a2 2 0 0 1 -2 -2 Z" fill="#e8eef7" stroke="#8fa6c4" stroke-width="2"/><rect x="20" y="27" width="8" height="14" rx="1.5" fill="#8fa6c4"/></svg>`,
+  start: `<svg class="cell-icon" viewBox="0 0 48 48"><path d="M24 4 L29 18 L44 18 L32 27 L37 42 L24 33 L11 42 L16 27 L4 18 L19 18 Z" fill="#f0b429" stroke="#fff" stroke-width="1.6"/></svg>`,
+  tax: `<svg class="cell-icon" viewBox="0 0 48 48"><circle cx="24" cy="24" r="17" fill="#f28ca0"/><path d="M24 12 v24 M17 18 q7-5 14 0 M17 30 q7 5 14 0" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round"/></svg>`,
+  bonus: `<svg class="cell-icon" viewBox="0 0 48 48"><rect x="8" y="18" width="32" height="24" rx="4" fill="#f0b429"/><path d="M8 20 q16 14 32 0" stroke="#fff" stroke-width="2.4" fill="none"/><path d="M24 20 c-8-8 -18-2 -10 6 z M24 20 c8-8 18-2 10 6 z" fill="#e07a9a"/></svg>`,
+  rest: `<svg class="cell-icon" viewBox="0 0 48 48"><path d="M30 8 a15 15 0 1 0 10 24 a13 13 0 0 1 -10 -24z" fill="#8a90ab"/><path d="M36 12 l1.6 3.4 L41 17 l-3.4 1.6 L36 22 l-1.6-3.4 L31 17 l3.4-1.6z" fill="#f0b429"/></svg>`,
+  cat: `<svg class="cell-icon" viewBox="0 0 48 48"><path d="M12 20 L9 8 L19 14 Z M36 20 L39 8 L29 14 Z" fill="#8a90ab"/><circle cx="24" cy="26" r="15" fill="#8a90ab"/><circle cx="19" cy="24" r="2.4" fill="#fff"/><circle cx="29" cy="24" r="2.4" fill="#fff"/><path d="M21 32 q3 2.4 6 0" stroke="#fff" stroke-width="2" fill="none" stroke-linecap="round"/></svg>`,
+  monster: `<svg class="cell-icon" viewBox="0 0 48 48"><path d="M14 6 q3 7 -2 12 q8-2 10 2 M34 6 q-3 7 2 12 q-8-2 -10 2" fill="#e8637e"/><path d="M24 8 q6 8 3 14 q-2 4-3 4 q-1 0-3-4 q-3-6 3-14z" fill="#e8637e"/><ellipse cx="24" cy="32" rx="12" ry="12" fill="#3a415c"/><path d="M14 28 l8 3 l-8 3z M34 28 l-8 3 l8 3z" fill="#e8637e"/><circle cx="24" cy="21" r="5.5" fill="#2e3450"/><circle cx="24" cy="21" r="2.6" fill="#ff9db0"/></svg>`,
+  train: `<svg class="cell-icon" viewBox="0 0 48 48"><rect x="8" y="12" width="32" height="20" rx="6" fill="#3a415c"/><rect x="13" y="17" width="9" height="7" rx="2" fill="#6fa8dc"/><rect x="26" y="17" width="9" height="7" rx="2" fill="#e8637e"/><circle cx="16" cy="36" r="3.4" fill="#3a415c"/><circle cx="32" cy="36" r="3.4" fill="#3a415c"/><path d="M6 41 h36" stroke="#8a90ab" stroke-width="2.6" stroke-linecap="round"/></svg>`,
+  /* NAVI：绿色全息终端 + 惊叹号，和流浪猫（灰猫）明显区分 */
+  navi: `<svg class="cell-icon" viewBox="0 0 48 48"><rect x="7" y="9" width="34" height="26" rx="6" fill="#3f9e77"/><rect x="10.5" y="12.5" width="27" height="19" rx="3.5" fill="#8fe0bd"/><path d="M24 15.5 v9" stroke="#1f5f47" stroke-width="4.2" stroke-linecap="round"/><circle cx="24" cy="29" r="2.4" fill="#1f5f47"/><path d="M17 41 h14 l-3-4 H20z" fill="#2f7f5f"/></svg>`,
+};
+const TYPE_HELP = {
+  start: "起点：经过或落在这里领工资 ¥200。",
+  property: "地产：可以买地、收租、升级；同色全买有垄断加成。",
+  tax: "特别会计：缴税 ¥100。",
+  bonus: "学园补助：直接 +¥150。",
+  rest: "日常一幕：什么都不发生，歇一口气。",
+  cat: "灰色的流浪猫：花 ¥50 喂猫，换 ¥150 的治愈。",
+  monster: "炭化之人：被烧到 -¥150，樱会出手相救。",
+  train: "黑列车：持巨铃的车掌收走 ¥300 车票钱。",
+  navi: "NAVI播报：抽取一张事件卡。",
+};
+
+let cardTimer = null;
+
+async function api(action, args = {}) {
+  const res = await fetch("/api/action", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, arguments: args }),
+  });
+  const data = await res.json();
+  if (!data.ok) toast(data.error || "操作失败");
+  return data;
+}
+function toast(msg, duration = 2600) {
+  const el = $("#toast");
+  el.textContent = msg;
+  el.style.display = "block";
+  el.style.whiteSpace = "pre-line";
+  el.style.textAlign = "center";
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.style.display = "none", duration);
+}
+
+/* 这一步走了哪条路：把路径画出来，棋子顺着线滑过去（不再一格一格跳） */
+let moveTimers = [];
+let moveRaf = 0;
+function tokenPos(player, node) {
+  const side = player === "user" ? -17 : 17;
+  const extra = mapState.organic ? (player === "user" ? -12 : 12) : 0;
+  const drop = mapState.organic ? 64 : 0;
+  return [PX(node.x) + 44 + side + extra, PY(node.y) + 44 + drop];
+}
+function animateMove(ev) {
+  const el = boardWrap.querySelector(`.token[data-player="${ev.player}"]`);
+  const game = state.game;
+  if (!el || !game || !game.cells || !ev.path || ev.path.length < 2) return;
+  moveTimers.forEach(clearTimeout);
+  moveTimers = [];
+  cancelAnimationFrame(moveRaf);
+  const layer = boardWrap.querySelector("#move-svg");
+  const nodes = ev.path.map(id => game.cells[id]).filter(Boolean);
+  if (nodes.length < 2) return;
+  const offset = (ev.player === "user" ? -17 : 17) + (mapState.organic ? (ev.player === "user" ? -12 : 12) : 0);
+  const drop = mapState.organic ? 64 : 0;   // 随机图里棋子比圆圈低一点，别挡住格子
+  // 路径画成一条折线，棋子沿线滑行；顺带在每格节点上点一个点，看清经过了几格
+  const pts = nodes.map(n => [PX(n.x) + 44, PY(n.y) + 44]);
+  const d = smoothPath(pts, false);
+  const color = ev.player === "user" ? "#4a86c8" : "#d95a72";
+  if (layer) {
+    layer.innerHTML = `
+      <path d="${d}" fill="none" stroke="#fff" stroke-width="12" stroke-linecap="round"
+        stroke-linejoin="round" opacity="0.9"/>
+      <path id="move-trace" d="${d}" fill="none" stroke="${color}" stroke-width="6"
+        stroke-linecap="round" stroke-linejoin="round" opacity="0.95"/>
+      ${pts.map(p => `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="4.5"
+        fill="#fff" stroke="${color}" stroke-width="2.5"/>`).join("")}`;
+  }
+  const trace = layer ? layer.querySelector("#move-trace") : null;
+  let length = 0;
+  if (trace) {
+    length = trace.getTotalLength();
+    trace.style.strokeDasharray = String(length);
+    trace.style.strokeDashoffset = String(length);
+  }
+  const duration = 340 + 210 * (nodes.length - 1);
+  const t0 = performance.now();
+  const step = (t) => {
+    const k = Math.min(1, (t - t0) / duration);
+    const ease = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+    if (trace && length) trace.style.strokeDashoffset = String(length * (1 - ease));
+    if (trace && length) {
+      const at = trace.getPointAtLength(length * ease);
+      el.style.left = (at.x + offset) + "px";
+      el.style.top = (at.y + drop) + "px";
+    }
+    if (k < 1) moveRaf = requestAnimationFrame(step);
+  };
+  moveRaf = requestAnimationFrame(step);
+  // 路径留一会儿再淡出，让人看清走了哪几格
+  moveTimers.push(setTimeout(() => {
+    if (layer) layer.style.transition = "opacity .6s ease";
+    if (layer) layer.style.opacity = "0";
+    moveTimers.push(setTimeout(() => {
+      if (layer) { layer.innerHTML = ""; layer.style.opacity = "1"; }
+    }, 650));
+  }, duration + 2600));
+}
+
+async function poll() {
+  try {
+    const res = await fetch("/state", { cache: "no-store" });
+    const data = await res.json();
+    let needRender = false;
+    if (data.version !== state.version) {
+      state.version = data.version;
+      state.game = data.game;
+      state.cards = data.cards || state.cards;
+      state.edges = data.edges;
+      state.mainPath = data.mainPath || null;
+      state.branches = data.branches || null;
+      state.decor = data.decor || null;
+      state.moves = data.moves || null;
+      state.settingMapKind = data.settingMapKind || state.settingMapKind;
+      state.mapTemplate = data.mapTemplate || null;
+      state.difficulty = data.difficulty || state.difficulty;
+      state.style = data.style != null ? data.style : state.style;
+      state.stats = data.stats || null;
+      needRender = true;
+    }
+    if (data.lastEvent && JSON.stringify(data.lastEvent) !== JSON.stringify(state.lastEvent)) {
+      state.lastEvent = data.lastEvent;
+      if (data.lastEvent.dice) {
+        // 记下来：之后再渲染骰子卡时用得上（lastEvent 会被后续的岔路事件顶掉）
+        state.lastRoll = { player: data.lastEvent.player, dice: data.lastEvent.dice };
+        showDice(data.lastEvent);
+      }
+      if (data.lastEvent.kind === "move" || data.lastEvent.path) {
+        // 等这一帧渲染完再播移动动画
+        setTimeout(() => animateMove(data.lastEvent), 60);
+      }
+    }
+    if (data.log && data.log.length !== state.log.length) {
+      const fresh = data.log.slice(state.log.length);
+      state.log = data.log;
+      appendLog(fresh);
+      for (const line of fresh) {
+        const m = line.match(/^NAVI通知【(.+?)】(.*)$/);
+        if (m) showCard(m[1], m[2], false);
+        if (line.includes("获胜")) showCard("对局结束", line, true);
+      }
+    }
+    if (needRender) render();
+  } catch (e) { /* 服务器未就绪时静默重试 */ }
+}
+
+function appendLog(lines) {
+  const log = $("#log");
+  for (const line of lines) {
+    const div = document.createElement("div");
+    if (line.startsWith("NAVI通知")) div.className = "navi";
+    else if (/破产|怪獣|黑列车|强制/.test(line)) div.className = "warn";
+    else if (/获胜/.test(line)) div.className = "win";
+    div.textContent = line;
+    log.appendChild(div);
+  }
+  log.scrollTop = log.scrollHeight;
+}
+
+function showCard(title, flavor, isWin) {
+  $("#e-card-title").textContent = title;
+  $("#e-card-flavor").textContent = flavor || "";
+  $("#e-card-from").textContent = isWin ? "对局结果" : "NAVI 通知";
+  const card = $("#e-card");
+  card.classList.toggle("win", !!isWin);
+  const modal = $("#card-modal");
+  modal.classList.remove("show");
+  void modal.offsetWidth;
+  modal.classList.add("show");
+  clearTimeout(cardTimer);
+  cardTimer = setTimeout(() => modal.classList.remove("show"), isWin ? 5200 : 4200);
+}
+
+/* 骰子 */
+const PIPS = { 1: [5], 2: [1, 9], 3: [1, 5, 9], 4: [1, 3, 7, 9], 5: [1, 3, 5, 7, 9], 6: [1, 3, 4, 6, 7, 9] };
+function drawDie(value) {
+  const die = $("#die");
+  die.innerHTML = Array.from({ length: 9 }, (_, i) =>
+    `<span class="pip ${PIPS[Math.min(6, value)].includes(i + 1) ? "on" : ""}"></span>`).join("");
+}
+function showDice(ev) {
+  drawDie(ev.dice);
+  const die = $("#die");
+  die.classList.remove("rolling");
+  void die.offsetWidth;
+  die.classList.add("rolling");
+  $("#dice-info").innerHTML =
+    `<span class="who">${NAMES[ev.player] || ev.player}</span> 掷出了 <b style="color:var(--pink-deep)">${ev.dice}</b> 点<br>` +
+    `<span class="sub">${ev.dice >= 5 ? "好点子！" : ev.dice <= 2 ? "骰子大概睡着了。" : "中规中矩的一掷。"}</span>`;
+}
+
+/* 骰子卡内容：大富翁=最近一次移动骰，五子棋=开局先后手骰 */
+function renderDiceCard(game) {
+  const info = $("#dice-info");
+  if (!game) {
+    drawDie(6);
+    info.innerHTML = `<span class="sub">开局后这里会显示骰子</span>`;
+    return;
+  }
+  if (game.kind === "gomoku") {
+    const rolls = game.first_rolls || {};
+    if (!rolls.user || !rolls.sakura) {
+      info.innerHTML = `<span class="sub">本局未记录先后手骰</span>`;
+      return;
+    }
+    drawDie(rolls.user);
+    info.innerHTML =
+      `先后手骰<br><span class="who">玩家 ${rolls.user}</span> · <span class="who">夜乃樱 ${rolls.sakura}</span><br>` +
+      `<span class="sub">点数大者先手 → ${NAMES[game.first || game.turn]}执先</span>`;
+    return;
+  }
+  // 掷骰事件在载荷里是 kind="move" 但**带 dice 字段**；以前只认 kind==="dice"，
+  // 于是每次重渲染都会把刚显示的点数覆盖回占位文字
+  const ev = state.lastEvent && state.lastEvent.dice ? state.lastEvent : null;
+  if (ev) {
+    drawDie(ev.dice);
+    info.innerHTML =
+      `<span class="who">${NAMES[ev.player] || ev.player}</span> 掷出了 <b style="color:var(--pink-deep)">${ev.dice}</b> 点<br>` +
+      `<span class="sub">${ev.dice >= 5 ? "好点子！" : ev.dice <= 2 ? "骰子大概睡着了。" : "中规中矩的一掷。"}</span>`;
+  } else if (state.lastRoll) {
+    drawDie(state.lastRoll.dice);
+    info.innerHTML = `<span class="who">${NAMES[state.lastRoll.player] || state.lastRoll.player}</span> 上次掷出 ` +
+      `<b style="color:var(--pink-deep)">${state.lastRoll.dice}</b> 点`;
+  } else {
+    drawDie(6);
+    info.innerHTML = `<span class="sub">等待第一次掷骰…</span>`;
+  }
+}
+
+/* ---------- 页签 ---------- */
+function buildTabs() {
+  const tabs = $("#tabs");
+  tabs.innerHTML = "";
+  for (const kind of ["monopoly", "gomoku"]) {
+    const btn = document.createElement("button");
+    btn.textContent = GAMES[kind];
+    if (state.game && state.game.kind === kind) {
+      btn.innerHTML = GAMES[kind] + `<span class="live-dot"></span>`;
+    }
+    if (currentKind() === kind) btn.classList.add("on");
+    btn.onclick = () => { state.tab = kind; render(); };
+    tabs.appendChild(btn);
+  }
+  const help = document.createElement("button");
+  help.className = "help-btn";
+  help.textContent = "玩法说明";
+  help.onclick = openHelp;
+  tabs.appendChild(help);
+}
+function currentKind() {
+  return state.tab || (state.game ? state.game.kind : null) || "monopoly";
+}
+
+function render() {
+  buildTabs();
+  renderMapSwitch();
+  const kind = currentKind();
+  const live = state.game && state.game.kind === kind;
+  renderPlayers(live ? state.game : null);
+  if (kind === "monopoly") renderMonopoly(live ? state.game : demoMonopoly(), !live);
+  else renderGomoku(live ? state.game : demoGomoku(), !live);
+}
+
+function renderMapSwitch() {
+  const row = $("#map-switch-row");
+  if (!row) return;
+  const current = state.settingMapKind || "city";
+  row.innerHTML = [["city", "第二横滨市"], ["random", "随机地图"]].map(([kind, label]) =>
+    `<button class="opt-btn" style="background:${kind === current ? "var(--green)" : "#fff"};color:${kind === current ? "#fff" : "var(--ink)"}"
+      onclick="api('set_map_kind',{kind:'${kind}'}).then(()=>poll())">${label}</button>`).join("");
+}
+
+function renderPlayers(game) {
+  const el = $("#players");  const cash = (game && game.kind === "monopoly") ? game.cash : null;
+  const stats = (game && game.kind === "monopoly") ? state.stats : null;
+  const rows = [];
+  for (const p of ["user", "sakura"]) {
+    const winner = game && game.winner === p;
+    const active = game && !game.winner && game.turn === p;
+    const avatar = p === "sakura"
+      ? `<img src="/art/avatar_sakura.png" onerror="this.outerHTML='<span class=&quot;avatar-fallback&quot;>樱</span>'" alt="">`
+      : `<img src="/art/avatar_user.svg" alt="" onerror="this.outerHTML='<span class=&quot;avatar-fallback&quot;>玩</span>'">`;
+    const own = stats && stats[p]
+      ? `<div class="own">地产 ${stats[p].properties} 处${stats[p].mortgaged ? `（抵押 ${stats[p].mortgaged}）` : ""} · 租金收益 ¥${stats[p].income}${stats[p].monopolies.length ? ` · 垄断 ${stats[p].monopolies.join("、")}` : ""}</div>`
+      : "";
+    rows.push(`<div class="player-row ${active ? "active" : ""} ${winner ? "winner" : ""}">
+      ${avatar}<div class="pinfo"><span class="who">${NAMES[p]}</span>${own}</div>
+      <span class="cash">${cash ? ` ¥${cash[p]}` : ""}</span></div>`);
+  }
+  el.innerHTML = rows.join("");
+}
+
+/* ---------- 大富翁：可拖拽图地图 ---------- */
+const mapState = { ox: 0, oy: 0, zoom: 1, nodeEls: {}, pendingCenter: null, lastVersion: -1,
+  baseOx: 0, baseOy: 0, originX: 0, originY: 0 };
+
+/* 世界坐标 → 画布像素。城市图是浮点坐标且不从 0 开始，所以按实际包围盒定原点。 */
+function worldBounds(cells) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const c of cells) {
+    if (c.x < minX) minX = c.x;
+    if (c.x > maxX) maxX = c.x;
+    if (c.y < minY) minY = c.y;
+    if (c.y > maxY) maxY = c.y;
+  }
+  if (!cells.length) { minX = 0; minY = 0; maxX = 1; maxY = 1; }
+  const pad = 1.6;   // 留白要容得下河道（世界右边距比最东节点更远）
+  mapState.originX = minX - pad;
+  mapState.originY = minY - pad;
+  return { w: (maxX - minX + pad * 2) * SPACING, h: (maxY - minY + pad * 2) * SPACING };
+}
+const PX = (x) => (x - mapState.originX) * SPACING;
+const PY = (y) => (y - mapState.originY) * SPACING;
+
+/* Catmull-Rom 转三次贝塞尔：把一串节点连成平滑街道（closed=环线首尾相接） */
+function smoothPath(pts, closed) {
+  const n = pts.length;
+  if (n < 2) return "";
+  const at = (i) => closed ? pts[((i % n) + n) % n] : pts[Math.min(n - 1, Math.max(0, i))];
+  let d = `M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`;
+  const last = closed ? n : n - 1;
+  for (let i = 0; i < last; i++) {
+    const p0 = at(i - 1), p1 = at(i), p2 = at(i + 1), p3 = at(i + 2);
+    const c1x = p1[0] + (p2[0] - p0[0]) / 6, c1y = p1[1] + (p2[1] - p0[1]) / 6;
+    const c2x = p2[0] - (p3[0] - p1[0]) / 6, c2y = p2[1] - (p3[1] - p1[1]) / 6;
+    d += ` C${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${p2[0].toFixed(1)},${p2[1].toFixed(1)}`;
+  }
+  return closed ? d + " Z" : d;
+}
+
+/* 一个指向 ang（度）的箭头，尖在 (x,y) */
+function chevron(x, y, ang, size, color, opacity) {
+  const s = size;
+  return `<path d="M${(-s * 0.5).toFixed(1)},${(-s * 0.6).toFixed(1)} L${(s * 0.5).toFixed(1)},0 L${(-s * 0.5).toFixed(1)},${(s * 0.6).toFixed(1)}"
+    fill="none" stroke="${color}" stroke-width="${(s * 0.4).toFixed(1)}" stroke-linecap="round"
+    stroke-linejoin="round" opacity="${opacity}"
+    transform="translate(${x.toFixed(1)},${y.toFixed(1)}) rotate(${ang.toFixed(1)})"/>`;
+}
+
+function renderMonopoly(game, demo) {
+  const cell = 88;
+  document.documentElement.style.setProperty("--cell", cell + "px");
+  const bounds = worldBounds(game.cells);
+  boardWrap.innerHTML = `
+    <div id="map-viewport"><div id="map-canvas" style="width:${bounds.w}px;height:${bounds.h}px">
+      <svg id="defs-svg" width="0" height="0" aria-hidden="true"><defs>
+        <filter id="soft-zone" x="-20%" y="-20%" width="140%" height="140%">
+          <feGaussianBlur stdDeviation="22"/></filter>
+      </defs></svg>
+      <svg id="edges-svg"></svg>
+      <div class="watermark" style="left:${bounds.w / 2}px;top:${bounds.h / 2}px;transform:translate(-50%,-50%)">
+        <div class="big">第二横滨市</div><div class="small">夜乃樱的棋盘</div></div>
+    </div></div>
+    ${demo ? `<span class="demo-badge">演示棋盘</span>` : `<span class="live-badge">对局进行中</span>`}
+    <span id="zoom-hint">拖动平移 · 滚轮缩放</span>
+    <div id="action-bar"></div>`;
+
+  /* 图层自下而上：地图底板 → 街区色晕 → 绿地 → 水体 → 建筑（立体） → 路网 → 方向箭头 */
+  const svg = $("#edges-svg");
+  svg.setAttribute("width", bounds.w);
+  svg.setAttribute("height", bounds.h);
+  const cx = (c) => PX(c.x) + cell / 2;
+  const cy = (c) => PY(c.y) + cell / 2;
+  const layers = [];
+  // 存档里是 map_kind/main_path，演示棋盘里是 mapKind/mainPath，两种键名都认
+  const kindKey = game.mapKind || game.map_kind;
+  const mainPath = game.main_path || game.mainPath || state.mainPath || null;
+  const decor = kindKey === "city"
+    ? (state.decor || (state.mapTemplate && state.mapTemplate.decor) || null) : null;
+  const city = kindKey === "city" && !!decor;
+  // 随机地图用"圆圈 + 直线"的路线图形态：圆圈正落在节点上，线从圆里穿过
+  mapState.organic = !city;
+  const canvasEl = $("#map-canvas");
+  if (canvasEl) canvasEl.classList.toggle("organic", mapState.organic);
+  const ring = (mainPath || []).slice();
+  if (ring.length > 1 && ring[0] === ring[ring.length - 1]) ring.pop();   // 采样末点会落回起点
+  const toScreen = (pts) => pts.map(p => [PX(p[0]), PY(p[1])]);
+  const polyPts = (poly) => poly.map(p => `${PX(p[0]).toFixed(1)},${PY(p[1]).toFixed(1)}`).join(" ");
+
+  if (city) {
+    const fr = decor.frame;
+    const fx = PX(fr.x0), fy = PY(fr.y0);
+    const fw = (fr.x1 - fr.x0) * SPACING, fh = (fr.y1 - fr.y0) * SPACING;
+    // 0. 地图底板 + 裁剪框：所有水体/色块都裁在框内，不会漫出地图
+    layers.push(`<rect x="${fx.toFixed(1)}" y="${fy.toFixed(1)}" width="${fw.toFixed(1)}"
+      height="${fh.toFixed(1)}" rx="26" fill="#f6f8fb"/>`);
+    layers.push(`<clipPath id="map-clip"><rect x="${fx.toFixed(1)}" y="${fy.toFixed(1)}"
+      width="${fw.toFixed(1)}" height="${fh.toFixed(1)}" rx="26"/></clipPath>`);
+    layers.push(`<g clip-path="url(#map-clip)">`);
+
+    // 1. 街区：低透明度色块。四块共用边界曲线，一直铺到边框、彼此不重叠 → 涂满且不混色
+    for (const d of (decor.districts || [])) {
+      layers.push(`<polygon points="${polyPts(d.poly)}" fill="${d.color}" opacity="0.16"/>`);
+    }
+    // 2. 绿地（有机形状）
+    for (const zone of (decor.green || [])) {
+      layers.push(`<polygon points="${polyPts(zone.poly)}" fill="#d7ead9" stroke="#c2dcc6" stroke-width="1.4"/>`);
+    }
+    // 3. 水域：右下角的海 + 两处水塘（海面比水塘略深，边界更明确）
+    if (decor.sea) {
+      const coast = decor.sea.coast.map((p, i) => `${i ? "L" : "M"}${PX(p[0]).toFixed(1)},${PY(p[1]).toFixed(1)}`).join(" ");
+      layers.push(`<polygon points="${polyPts(decor.sea.poly)}" fill="#c2dcf2"/>`);
+      layers.push(`<path d="${coast}" fill="none" stroke="#93bdde" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>`);
+    }
+    for (const p of (decor.ponds || [])) {
+      layers.push(`<ellipse cx="${PX(p.x).toFixed(1)}" cy="${PY(p.y).toFixed(1)}"
+        rx="${(p.rx * SPACING).toFixed(1)}" ry="${(p.ry * SPACING).toFixed(1)}" fill="#cfe4f5"/>`);
+    }
+    // 4. 建筑：扁平方块 + 一点淡淡的贴地投影（和城市预览图是同一套画法，别再加挤出/模糊阴影）
+    for (const b of (decor.buildings || [])) {
+      const bw = Math.max(4, b.w * SPACING * 0.85), bh = Math.max(4, b.h * SPACING * 0.85);
+      const bx = PX(b.x) - bw / 2, by = PY(b.y) - bh / 2;
+      const shade = 226 + Math.round((b.k || 0) * 18);
+      layers.push(`<rect x="${(bx + 2.5).toFixed(1)}" y="${(by + 3.5).toFixed(1)}"
+        width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" rx="2" fill="#5c6b88" opacity="0.14"/>`);
+      layers.push(`<rect x="${bx.toFixed(1)}" y="${by.toFixed(1)}" width="${bw.toFixed(1)}"
+        height="${bh.toFixed(1)}" rx="2" fill="rgb(${shade},${shade + 2},${shade + 6})"
+        stroke="#c3cbd6" stroke-width="0.7"/>`);
+    }
+    layers.push("</g>");
+    layers.push(`<rect x="${fx.toFixed(1)}" y="${fy.toFixed(1)}" width="${fw.toFixed(1)}"
+      height="${fh.toFixed(1)}" rx="26" fill="none" stroke="#d8e0ec" stroke-width="2"/>`);
+
+    /* 5. 路网：直接用地图里的真实街道折线（已在 Python 侧做过拐角圆弧过渡），
+       分三遍画：先所有路肩 → 再所有路面 → 最后把主环路面/中线重画一遍。
+       这样支街是"汇入"主环，而不会压在主环上面盖出缺口。 */
+    const ROAD_STYLE = {
+      ring:   { shoulder: "#6f9ecb", surface: "#ffffff", sw: 32, pw: 23, rank: 0 },
+      artery: { shoulder: "#a8bfd8", surface: "#f0f5fb", sw: 21, pw: 14, rank: 1 },
+      branch: { shoulder: "#cbd8e8", surface: "#eef3f9", sw: 15, pw: 9.5, rank: 2 },
+    };
+    const roadPath = (r) => {
+      const line = toScreen(r.pts);
+      if (line.length > 1 && r.closed
+          && Math.abs(line[0][0] - line[line.length - 1][0]) < 0.01
+          && Math.abs(line[0][1] - line[line.length - 1][1]) < 0.01) {
+        line.pop();
+      }
+      if (line.length < 2) return "";
+      const d = line.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ");
+      return r.closed ? d + " Z" : d;
+    };
+    const roadList = (decor.roads || [])
+      .map(r => ({ role: ROAD_STYLE[r.role] ? r.role : "branch", d: roadPath(r) }))
+      .filter(r => r.d)
+      .sort((a, b) => ROAD_STYLE[a.role].rank - ROAD_STYLE[b.role].rank);
+    for (const r of roadList) {
+      layers.push(`<path d="${r.d}" fill="none" stroke="${ROAD_STYLE[r.role].shoulder}"
+        stroke-width="${ROAD_STYLE[r.role].sw}" stroke-linejoin="round"/>`);
+    }
+    for (const r of roadList) {
+      layers.push(`<path d="${r.d}" fill="none" stroke="${ROAD_STYLE[r.role].surface}"
+        stroke-width="${ROAD_STYLE[r.role].pw}" stroke-linejoin="round"/>`);
+    }
+    for (const r of roadList.filter(x => x.role === "ring")) {
+      layers.push(`<path d="${r.d}" fill="none" stroke="#ffffff" stroke-width="23" stroke-linejoin="round"/>`);
+    }
+    for (const r of roadList.filter(x => x.role === "ring")) {
+      // 拿来按弧长量行进方向；stroke:none 的路径也能测长度
+      layers.push(`<path id="ring-measure" d="${r.d}" fill="none" stroke="none"/>`);
+      layers.push(`<path d="${r.d}" fill="none" stroke="#9cc0e8" stroke-width="2.6"
+        stroke-dasharray="14 13" stroke-linejoin="round"/>`);
+    }
+    layers.push(`<g id="dir-layer"></g>`);
+
+    // 6. 区域名放最后（在绿地/水体/道路之上），加白描边保证任何底色上都读得清
+    for (const d of (decor.districts || [])) {
+      const bx = d.poly.reduce((s, p) => s + PX(p[0]), 0) / d.poly.length;
+      const by = d.poly.reduce((s, p) => s + PY(p[1]), 0) / d.poly.length;
+      layers.push(`<text class="district-name" x="${bx.toFixed(1)}" y="${by.toFixed(1)}"
+        fill="${d.color}">${d.label}</text>`);
+    }
+  } else {
+    // 随机地图：主环（蛇形，宽路+虚线中线）与短支线（窄路）分开画，结构一眼能看出来
+    const seg = (a, b, shoulder, surface) =>
+      `<path d="M${cx(game.cells[a]).toFixed(1)},${cy(game.cells[a]).toFixed(1)} L${cx(game.cells[b]).toFixed(1)},${cy(game.cells[b]).toFixed(1)}"
+        fill="none" stroke="${shoulder}" stroke-width="${shoulder === "#6f9ecb" ? 26 : 13}" stroke-linecap="round"/>` +
+      `<path d="M${cx(game.cells[a]).toFixed(1)},${cy(game.cells[a]).toFixed(1)} L${cx(game.cells[b]).toFixed(1)},${cy(game.cells[b]).toFixed(1)}"
+        fill="none" stroke="${surface}" stroke-width="${shoulder === "#6f9ecb" ? 18 : 7}" stroke-linecap="round"/>`;
+    const trunkKey = (a, b) => (a < b ? `${a}_${b}` : `${b}_${a}`);
+    const trunk = new Set();
+    const order = (mainPath || []).slice();
+    if (order.length > 1 && order[0] === order[order.length - 1]) order.pop();
+    for (let i = 0; i < order.length; i += 1) {
+      trunk.add(trunkKey(order[i], order[(i + 1) % order.length]));
+    }
+    const side = [];
+    for (const [a, b] of (game.edges || [])) {
+      if (a === b) continue;
+      if (trunk.has(trunkKey(a, b))) {
+        layers.push(seg(a, b, "#6f9ecb", "#ffffff"));
+      } else {
+        side.push([a, b]);
+      }
+    }
+    // 主环中线（虚线）叠在白色路面之上
+    for (const [a, b] of (game.edges || [])) {
+      if (a === b || !trunk.has(trunkKey(a, b))) continue;
+      layers.push(`<path d="M${cx(game.cells[a]).toFixed(1)},${cy(game.cells[a]).toFixed(1)} L${cx(game.cells[b]).toFixed(1)},${cy(game.cells[b]).toFixed(1)}"
+        fill="none" stroke="#9cc0e8" stroke-width="2.2" stroke-dasharray="12 12" stroke-linecap="round"/>`);
+    }
+    for (const [a, b] of side) layers.push(seg(a, b, "#cbd8e8", "#eef3f9"));
+  }
+
+  // 6. 可行方向：从当前格朝每个"允许走"的邻格抬一个金色箭头（城市图里这就代表单行方向）
+  const hot = [];
+  const actor = game.pending && game.pending.type === "route"
+    ? game.pending.player : (game.winner ? null : game.turn);
+  const walkNode = game.walk && game.walk.path && game.walk.path.length
+    ? game.walk.path[game.walk.path.length - 1] : null;
+  const fromNode = walkNode !== null ? walkNode : (actor && game.positions ? game.positions[actor] : null);
+  if (fromNode !== null && fromNode !== undefined && game.cells[fromNode]) {
+    const here = game.cells[fromNode];
+    const moves = (state.moves && state.moves[String(fromNode)]) || null;
+    const targets = moves || (game.edges || []).reduce((acc, [a, b]) => {
+      if (a === fromNode) acc.push(b);
+      else if (b === fromNode) acc.push(a);
+      return acc;
+    }, []);
+    for (const other of targets) {
+      const nd = game.cells[other];
+      if (!nd) continue;
+      const ang = Math.atan2(cy(nd) - cy(here), cx(nd) - cx(here));
+      const r = 60;
+      hot.push(chevron(cx(here) + Math.cos(ang) * r, cy(here) + Math.sin(ang) * r,
+                       ang * 180 / Math.PI, 15, "#f0b429", "0.95"));
+    }
+  }
+  svg.innerHTML = layers.join("") + hot.join("");
+
+  /* 行进方向箭头：拿真实的主环路径按弧长取点，箭头严格贴在路面上（以前按节点连线画，
+     所以会"一会在主路上、一会在主路旁"）。 */
+  const measure = svg.querySelector("#ring-measure");
+  const dirLayer = svg.querySelector("#dir-layer");
+  if (measure && dirLayer) {
+    const total = measure.getTotalLength();
+    const count = Math.max(6, Math.round(total / (SPACING * 1.9)));
+    const marks = [];
+    for (let i = 0; i < count; i++) {
+      const at = total * (i + 0.5) / count;
+      const p = measure.getPointAtLength(at);
+      const q = measure.getPointAtLength(Math.min(total, at + 3));
+      const ang = Math.atan2(q.y - p.y, q.x - p.x) * 180 / Math.PI;
+      marks.push(chevron(p.x, p.y, ang, 13, "#3f6fa8", "0.95"));
+    }
+    dirLayer.innerHTML = marks.join("");
+  }
+
+  const frag = [];
+  game.cells.forEach((c) => {
+    const wx = PX(c.x), wy = PY(c.y);
+    const g = c.group ? GROUPS[c.group] : null;
+    const ring = g ? g.color : (c.type === "start" ? "#e8a91f" : "#9bb4d4");
+    const badge = c.type !== "property" && c.type !== "start" ? " badge" : "";
+    const start = c.type === "start" ? " start" : "";
+    // 钉尖落点（锚点）压在路线上的节点处，图钉本体向上展开，不遮路线
+    frag.push(`<span class="pdot${start}" style="--ring:${ring};left:${wx + 44}px;top:${wy + 44}px"></span>`);
+    frag.push(`<div class="cell${badge}${start} ${c.owner ? "owned" : ""} ${c.mortgaged ? "mortgaged" : ""}"
+      data-id="${c.id}" data-wx="${wx + 44}" data-wy="${wy + 44}"
+      style="--ring:${ring};left:${wx + 44}px;top:${wy + 44}px">${cellHTML(c)}</div>`);
+  });
+  const tokenImgs = { user: "/art/avatar_user.svg", sakura: "/art/avatar_sakura.png" };
+  const actorNow = game.pending && game.pending.type === "route"
+    ? game.pending.player : (game.winner ? null : game.turn);
+  for (const p of ["user", "sakura"]) {
+    const nd = game.cells[game.positions[p]];
+    // 随机图的圆圈就在节点上，棋子要挪到圆圈下边，别把格子挡住
+    const px = PX(nd.x) + 44 + (p === "user" ? -17 : 17) + (mapState.organic ? (p === "user" ? -12 : 12) : 0);
+    const py = PY(nd.y) + 44 + (mapState.organic ? 64 : 0);
+    frag.push(`<img class="token ${p} ${actorNow === p ? "active-turn" : ""}" data-player="${p}"
+      src="${tokenImgs[p]}" style="left:${px}px;top:${py}px">`);
+  }
+  $("#map-canvas").insertAdjacentHTML("beforeend", frag.join(""));
+  // 加一层专门画"这一步走了哪条路"的图层（在棋子下面、路网上面）
+  $("#map-canvas").insertAdjacentHTML("beforeend", `<svg id="move-svg" width="${bounds.w}" height="${bounds.h}"></svg>`);
+  mapState.nodeEls = {};
+  boardWrap.querySelectorAll(".cell").forEach(el => { mapState.nodeEls[el.dataset.id] = el; });
+
+  initPanZoom(bounds);
+  if (state.version !== mapState.lastVersion) {
+    mapState.lastVersion = state.version;
+    const a = game.cells[game.positions.user], b = game.cells[game.positions.sakura];
+    mapState.pendingCenter = { x: (PX(a.x) + PX(b.x)) / 2 + cell / 2, y: (PY(a.y) + PY(b.y)) / 2 + cell / 2 };
+  }
+  renderMonopolyInfo(game);
+  renderDiceCard(game);
+  renderActionBar(game, demo);
+}
+
+function cellHTML(c) {
+  const g = c.group ? GROUPS[c.group] : null;
+  const ring = g ? g.color : (c.type === "start" ? "#e8a91f" : "#9bb4d4");
+  if (c.type === "property") {
+    const ownerMark = c.owner ? `<span class="owner-tag">${NAMES[c.owner].slice(0, 1)}</span>` : "";
+    const stateLabel = c.mortgaged ? "抵押" : (c.level ? "升级" : "");
+    // 地标插画（AI 生成）盖在通用图标上；图片缺失时 onerror 移除自己，露出下面的通用图标
+    const poiKey = (c.icon || "").startsWith("poi-") ? c.icon.slice(4) : null;
+    const art = poiKey
+      ? `<img class="poi-img" src="/art/poi/${poiKey}.png" alt="" loading="lazy" onerror="this.remove()">`
+      : "";
+    return `<span class="pin-chip" style="--ring:${ring}"><i class="band" style="background:${ring}"></i>
+        ${c.name}<span class="price">¥${c.price}</span>${stateLabel ? `<span class="sub">${stateLabel}</span>` : ""}${ownerMark}</span>
+      <span class="pin-thumb">${art}${ICONS.property}</span>
+      <span class="pin-tail"></span>`;
+  }
+  const cls = c.type === "start" ? "start" : "badge";
+  return `<span class="pin-chip"><i class="band" style="background:${ring}"></i>${c.name}</span>
+    <span class="pin-thumb">${ICONS[c.type] || ""}</span>
+    <span class="pin-tail"></span>`;
+}
+
+function initPanZoom(bounds) {
+  const vp = $("#map-viewport");
+  // 视口元素每次渲染都是新建的，监听器随元素销毁，直接绑定即可
+  let dragging = false, sx = 0, sy = 0;
+  vp.addEventListener("pointerdown", (e) => {
+    dragging = true; sx = e.clientX - mapState.ox; sy = e.clientY - mapState.oy;
+    vp.classList.add("dragging"); vp.setPointerCapture(e.pointerId);
+  });
+  vp.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    mapState.ox = e.clientX - sx; mapState.oy = e.clientY - sy;
+    applyTransform();
+  });
+  vp.addEventListener("pointerup", () => { dragging = false; vp.classList.remove("dragging"); });
+  vp.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.12 : 0.89;
+    const rect = vp.getBoundingClientRect();
+    const cx = rect.width / 2, cy = rect.height / 2;
+    mapState.zoom = Math.min(1.8, Math.max(0.68, mapState.zoom * factor));
+    // 缩放围绕视口中心：调整偏移使中心的世界坐标不动
+    const wx = (cx - mapState.ox) / mapState.zoom;
+    const wy = (cy - mapState.oy) / mapState.zoom;
+    mapState.ox = cx - wx * mapState.zoom;
+    mapState.oy = cy - wy * mapState.zoom;
+    applyTransform();
+  }, { passive: false });
+  // 视角：首帧适配全图；之后回合更新时平滑居中到双方棋子中点（保留用户的缩放）
+  const rect = vp.getBoundingClientRect();
+  if (!mapState.fitted || mapState.lastBoundsW !== bounds.w || mapState.lastBoundsH !== bounds.h) {
+    mapState.fitted = true;
+    mapState.lastBoundsW = bounds.w; mapState.lastBoundsH = bounds.h;
+    // 顶部落操作条、底部留徽章空间，地图在剩余区域居中
+    const topPad = 66, botPad = 46;
+    const availH = Math.max(200, rect.height - topPad - botPad);
+    const fit = Math.min(rect.width / (bounds.w + 80), availH / bounds.h, 1.4);
+    // 整图塞进视口时图钉会小到看不清插图，所以给一个缩放下限：宁可让人拖一下，
+    // 也不要让人看不清格子和棋子（下限随地图规模走，地图越大越保守）
+    const floor = bounds.w > 2600 ? 0.82 : 0.72;
+    mapState.zoom = Math.max(floor, Math.min(1.1, fit));
+    mapState.ox = (rect.width - bounds.w * mapState.zoom) / 2;
+    mapState.oy = topPad + (availH - bounds.h * mapState.zoom) / 2;
+    mapState.pendingCenter = null;
+    mapState.baseOx = mapState.ox;
+    mapState.baseOy = mapState.oy;
+    applyTransform();
+  } else if (mapState.pendingCenter) {
+    const target = mapState.pendingCenter;
+    mapState.pendingCenter = null;
+    const fromOx = mapState.ox, fromOy = mapState.oy;
+    const toOx = rect.width / 2 - target.x * mapState.zoom;
+    const toOy = rect.height / 2 - target.y * mapState.zoom;
+    const t0 = performance.now();
+    const step = (t) => {
+      const k = Math.min(1, (t - t0) / 450);
+      const ease = 1 - Math.pow(1 - k, 3);
+      mapState.ox = fromOx + (toOx - fromOx) * ease;
+      mapState.oy = fromOy + (toOy - fromOy) * ease;
+      applyTransform();
+      if (k < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  } else {
+    applyTransform();
+  }
+}
+
+function applyTransform() {
+  const canvas = $("#map-canvas");
+  if (!canvas) return;
+  canvas.style.transform = `translate(${mapState.ox}px,${mapState.oy}px) scale(${mapState.zoom})`;  // 景深：离视口中心越远越小（范围拉开，拖拽时能明显看出远近）
+  const vp = $("#map-viewport");
+  const rect = vp.getBoundingClientRect();
+  const cx = rect.width / 2, cy = rect.height / 2;
+  const maxD = Math.hypot(rect.width, rect.height) / 2 || 1;
+  for (const id in mapState.nodeEls) {
+    const el = mapState.nodeEls[id];
+    const sx = parseFloat(el.dataset.wx) * mapState.zoom + mapState.ox;
+    const sy = parseFloat(el.dataset.wy) * mapState.zoom + mapState.oy;
+    const d = Math.min(1, Math.hypot(sx - cx, sy - cy) / maxD);
+    const s = 1.16 - d * 0.40;          // 中心 1.16 → 边缘 0.76
+    el.style.transform = `translate(-50%, calc(-100% ${mapState.organic ? "+ 31px" : "- 22px"})) scale(${s.toFixed(3)})`;
+    el.style.zIndex = String(3 + Math.round((1 - d) * 4));
+  }
+  // 棋子头像：地图缩小时反向放大，保证任何缩放级别下都看得见双方在哪
+  const tokenScale = Math.min(2.5, Math.max(1.15, 1.15 / Math.max(0.45, mapState.zoom)));
+  for (const el of boardWrap.querySelectorAll(".token")) {
+    el.style.transform = `translate(-50%,-50%) scale(${tokenScale.toFixed(3)})`;
+  }
+  // 视差：水印随地图移动得更慢，产生纵深
+  const mark = canvas.querySelector(".watermark");
+  if (mark) {
+    const px = (mapState.ox - mapState.baseOx) * 0.55;
+    const py = (mapState.oy - mapState.baseOy) * 0.55;
+    mark.style.marginLeft = px + "px";
+    mark.style.marginTop = py + "px";
+  }
+}
+window.addEventListener("resize", () => { if (state.game && state.game.kind === "monopoly") applyTransform(); });
+setInterval(applyTransform, 400);  // 兜底：窗口缩放/拖动后重算景深
+
+function renderMonopolyInfo(game) {
+  $("#info-card").style.display = "";
+  const props = game.cells.filter(c => c.type === "property" && c.owner);
+  const mono = [];
+  for (const gid in GROUPS) {
+    const members = game.cells.filter(c => c.type === "property" && c.group === gid);
+    if (members.length >= 2 && members.every(c => c.owner && !c.mortgaged)) {
+      mono.push(`${GROUPS[gid].label} → ${NAMES[members[0].owner]}（租金×2）`);
+    }
+  }
+  const lines = [`回合 ${game.move_count} / ${game.max_rounds}`];
+  if (mono.length) lines.push(`<span class="g">垄断：</span>` + mono.join("<br>"));
+  lines.push(props.length ? "地产：" + props.map(c =>
+    `${c.name}（${NAMES[c.owner]}${c.mortgaged ? "·抵押" : c.level ? "·升级" : ""}）`).join("、") : "尚无地产主");
+  $("#info").innerHTML = lines.join("<br>");
+}
+
+function renderActionBar(game, demo) {
+  const bar = $("#action-bar");
+  if (!bar) return;
+  const kind = currentKind();
+  let html = "";
+  if (demo) {
+    html = `<button onclick="api('start',{game:'${kind}'}).then(()=>poll())">开始对局</button>
+      <span class="hint">演示棋盘 · 点这里开一局真实的</span>`;
+  } else if (game.winner) {
+    html = `<button class="gold" onclick="api('start',{game:'${game.kind}'}).then(()=>poll())">再来一局</button>
+      <span class="hint">${NAMES[game.winner]} 获胜！</span>`;
+  } else if (game.kind === "monopoly") {
+    if (game.pending && game.pending.player === "user") {
+      if (game.pending.type === "route") {
+        html = `<span class="hint">岔路！选择前进方向：</span>` + game.pending.options.map(nodeId => {
+          const c = game.cells[nodeId];
+          return `<button class="gold" onclick="api('decide',{action:'${nodeId}'}).then(()=>poll())">→ ${c.name}</button>`;
+        }).join("");
+      } else {
+        const labels = { buy: "买入", upgrade: "升级", mortgage: "抵押", redeem: "赎回", sell: "卖掉", skip: "跳过" };
+        html = `<span class="hint">${game.cells[game.pending.cell].name}：</span>` +
+          game.pending.options.map(o =>
+            `<button class="${o === "skip" ? "ghost" : ""}" onclick="api('decide',{action:'${o}'}).then(()=>poll())">${labels[o] || o}</button>`).join("");
+      }
+    } else if (game.pending || game.walk) {
+      html = `<button class="pink" onclick="api('act_sakura').then(()=>poll())">请夜乃樱行动</button>
+        <span class="hint">${game.pending ? "夜乃樱正在决策" : "夜乃樱走格子中"}…</span>`;
+    } else if (game.turn === "user") {
+      html = `<button onclick="api('roll').then(()=>poll())">🎲 掷骰子</button>
+        <span class="hint">轮到你了，掷出几点走几格</span>`;
+    } else {
+      html = `<button class="pink" onclick="api('act_sakura').then(()=>poll())">请夜乃樱行动</button>
+        <span class="hint">轮到夜乃樱了</span>`;
+    }
+  } else if (game.kind === "gomoku") {
+    if (game.turn === "user") {
+      html = `<span class="hint">轮到你了，点击棋盘落子</span>`;
+    } else {
+      html = `<button class="pink" onclick="api('act_sakura').then(()=>poll())">请夜乃樱行动</button>
+        <span class="hint">夜乃樱思考中…</span>`;
+    }
+  }
+  // 对局进行中也给一个重开入口：角色自己是不会开新局的（她只能说"你按按钮"）
+  if (!demo && game && !game.winner) {
+    html += ` <button class="ghost" onclick="restartGame('${game.kind}')">重开一局</button>`;
+  }
+  bar.innerHTML = html;
+}
+
+function restartGame(kind) {
+  if (!window.confirm("重开一局？当前这局的进度会丢弃。")) return;
+  api("start", { game: kind }).then(() => poll());
+}
+
+/* ---------- 五子棋 ---------- */
+function renderGomoku(game, demo) {
+  const size = game.board.length;
+  // 棋盘自适应：按可用空间取最大格径（16 行含表头）
+  const availW = boardWrap.clientWidth - 80, availH = boardWrap.clientHeight - 150;
+  const cell = Math.max(24, Math.min(46, Math.floor(Math.min(availW / (size + 1), availH / (size + 1)))));
+  document.documentElement.style.setProperty("--gcell", cell + "px");
+  let html = `<div id="gomoku"><div><table>`;
+  for (let tr = 0; tr <= size; tr++) {
+    html += "<tr>";
+    for (let tc = 0; tc <= size; tc++) {
+      if (tr === 0 && tc === 0) { html += `<td class="head"></td>`; continue; }
+      if (tr === 0) { html += `<td class="head">${tc}</td>`; continue; }
+      if (tc === 0) { html += `<td class="head">${tr}</td>`; continue; }
+      const v = game.board[tr - 1][tc - 1];
+      const playable = !demo && !game.winner && game.turn === "user" && !v;
+      html += `<td class="${playable ? "playable" : ""}" ${playable ? `onclick="api('place',{row:${tr},col:${tc}}).then(()=>poll())"` : ""}>${v ? `<span class="stone ${v === 1 ? "user" : "sakura"}"></span>` : ""}</td>`;
+    }
+    html += "</tr>";
+  }
+  html += `</table><div class="legend">○ 玩家　● 夜乃樱</div></div></div>`;
+  boardWrap.innerHTML = html + (demo ? `<span class="demo-badge">演示棋盘</span>` : `<span class="live-badge">对局进行中</span>`);
+
+  $("#info-card").style.display = "";
+  // 难度与棋风：各自成行，按钮之间留出间距（之前挤成一团）
+  const optBtn = (on, color, text, action) =>
+    `<button class="opt-btn" style="background:${on ? color : "#fff"};color:${on ? "#fff" : "var(--ink)"}"
+      onclick="${action}">${text}</button>`;
+  const diffSelect = [1, 2, 3].map(l =>
+    optBtn(l === state.difficulty, "var(--blue)", ["", "入门", "进阶", "困难"][l],
+          `api('set_difficulty',{level:${l}}).then(()=>poll())`)).join("");
+  const styleSelect = [[15, "稳健"], [45, "均衡"], [80, "进攻"]].map(([v, label]) =>
+    optBtn(Math.abs(state.style - v) < 20, "var(--pink-deep)", label,
+          `api('set_style',{style:${v}}).then(()=>poll())`)).join("");
+  const rolls = game.first_rolls || {};
+  const rollLine = (rolls.user && rolls.sakura)
+    ? `先后手骰：玩家 ${rolls.user} · 夜乃樱 ${rolls.sakura} → ${NAMES[game.first || game.turn]}先手<br>` : "";
+  $("#info").innerHTML = rollLine + `第 ${game.move_count} 手${game.winner ? `，${NAMES[game.winner]} 获胜` : ""}` +
+    `<div class="opt-line"><span class="opt-label">AI 难度</span><span class="opt-row">${diffSelect}</span></div>` +
+    `<div class="opt-line"><span class="opt-label">夜乃樱棋风</span><span class="opt-row">${styleSelect}</span></div>` +
+    `<div class="sub" style="margin-top:8px;font-size:11px">棋风＝她的进攻/防守权重，默认值来自插件设置里的「五子棋棋风」（按角色性格设定）；这里的按钮是临时覆盖。</div>`;
+  renderDiceCard(game);
+  renderActionBar(game, demo);
+}
+
+/* ---------- 演示数据 ---------- */
+function demoMonopoly() {
+  // 手工城市图：直接用地图模板当演示棋盘，和正式对局长得一样
+  const tpl = state.mapTemplate;
+  if (tpl && tpl.cells && tpl.cells.length) {
+    const cells = tpl.cells.map((c, i) => ({
+      ...c,
+      owner: c.type === "property" ? (i % 5 === 2 ? "user" : (i % 3 === 1 ? "sakura" : null)) : null,
+      level: 0, mortgaged: false,
+    }));
+    const start = (cells.find(c => c.type === "start") || { id: 0 }).id;
+    return {
+      kind: "monopoly", cells, edges: tpl.edges, mainPath: tpl.mainPath, branches: tpl.branches,
+      mapKind: "city", cols: 0, rows: 0, map_version: 4,
+      cash: { user: 1250, sakura: 1450 }, positions: { user: start, sakura: start },
+      turn: "user", winner: null, move_count: 12, max_rounds: 96, pending: null, walk: null,
+      start_node: start,
+    };
+  }
+  return demoMonopolyGrid();
+}
+
+function demoMonopolyGrid() {
+  const names = [
+    { t: "start", n: "起点" },
+    { t: "property", n: "家庭餐厅", g: "shopping", p: 100 },
+    { t: "navi", n: "NAVI播报" },
+    { t: "property", n: "披萨店", g: "shopping", p: 100 },
+    { t: "cat", n: "灰色的流浪猫" },
+    { t: "property", n: "学生会室", g: "gakuen", p: 200 },
+    { t: "tax", n: "特别会计" },
+    { t: "property", n: "图书馆委员会", g: "gakuen", p: 200 },
+    { t: "rest", n: "日常一幕" },
+    { t: "property", n: "情侣酒店", g: "shopping", p: 200 },
+    { t: "monster", n: "炭化之人" },
+    { t: "property", n: "探索委员会", g: "gakuen", p: 200 },
+    { t: "bonus", n: "学园补助" },
+    { t: "property", n: "公园", g: "daily", p: 100 },
+    { t: "train", n: "黑列车" },
+    { t: "property", n: "东京巨壁", g: "taboo", p: 300 },
+    { t: "navi", n: "NAVI播报" },
+    { t: "property", n: "樱的公寓", g: "daily", p: 100 },
+    { t: "property", n: "地下铁道", g: "taboo", p: 300 },
+    { t: "rest", n: "日常一幕" },
+    { t: "property", n: "玩家的公寓", g: "daily", p: 100 },
+    { t: "cat", n: "灰色的流浪猫" },
+    { t: "property", n: "大圣堂", g: "gakuen", p: 300 },
+    { t: "property", n: "黑列车车站", g: "taboo", p: 300 },
+  ];
+  const cols = 8, rows = 3;
+  const cells = names.map((x, i) => ({
+    id: i, x: i % cols, y: Math.floor(i / cols), type: x.t, name: x.n, group: x.g || null,
+    tier: 0, price: x.p || 0,
+    owner: x.t === "property" ? (i % 3 === 0 ? "user" : i % 3 === 1 ? "sakura" : null) : null,
+    level: i === 5 ? 1 : 0, mortgaged: false,
+  }));
+  const edges = [];
+  for (let i = 0; i < cells.length; i++) {
+    if (i % cols !== cols - 1 && i + 1 < cells.length) edges.push([i, i + 1]);
+    if (i + cols < cells.length) edges.push([i, i + cols]);
+  }
+  state.edges = edges;
+  return {
+    kind: "monopoly", cells, edges, cols, rows,
+    cash: { user: 850, sakura: 1150 }, positions: { user: 0, sakura: 0 },
+    turn: "user", winner: null, move_count: 18, max_rounds: 96, pending: null, walk: null,
+    start_node: 0,
+  };
+}
+function demoGomoku() {
+  const board = Array.from({ length: 15 }, () => Array(15).fill(0));
+  [[7, 7], [7, 8], [8, 7], [8, 8], [9, 7], [9, 8], [10, 7]].forEach(([r, c], i) => {
+    board[r][c] = i % 2 === 0 ? 1 : 2;
+  });
+  return { kind: "gomoku", board, move_count: 7, winner: null, turn: "sakura",
+           first: "sakura", first_rolls: { user: 3, sakura: 5 } };
+}
+
+/* ---------- 帮助弹窗 ---------- */
+function openHelp() {
+  const ICON_KEYS = ["start", "property", "tax", "bonus", "rest", "cat", "monster", "train", "navi"];
+  const legend = ICON_KEYS.map(k => {
+    const icon = k === "property"
+      ? `<svg class="cell-icon" viewBox="0 0 48 48"><path d="M8 22 L24 8 L40 22 Z" fill="#e07a9a"/><rect x="12" y="22" width="24" height="16" rx="2" fill="#6fa8dc"/></svg>`
+      : ICONS[k];
+    return `<div class="lg">${icon}<span>${TYPE_HELP[k]}</span></div>`;
+  }).join("");
+  const cards = (state.cards || []).map(c =>
+    `<div class="cd"><div class="t">${c.title}</div><div class="e">${c.effect}</div><div class="f">${c.flavor}</div></div>`).join("");
+  $("#help-box").innerHTML = `
+    <h2>玩法说明</h2>
+    <h4>大富翁 · 第二横滨市</h4>
+    <p>掷骰后沿街道走相应格数。城市由外环干道、两条主动脉和七条支街组成，<b>岔路会标出拐出去的方向</b>，遇到岔路由你选择走法。经过或落在起点领工资。
+    地产分四个街区（<b style="color:#4a8bc9">学园区</b> / <b style="color:#d95a72">街市</b> / <b style="color:#3f9e83">住宅区</b> / <b style="color:#4a5470">禁忌区</b>），
+    同街区全持且无抵押时租金翻倍。走到无主地产可以买；走回自己的地产可以升级（租金×2）、抵押（回收半价）、赎回（六成价）或卖掉（三分之一）。
+    付不起账单会强制抵押，全抵押还不够就破产，资产移交债主。回合上限后按现金判胜负。</p>
+    <h4>格子图例</h4>
+    <div class="legend-grid">${legend}</div>
+    <h4>NAVI 事件卡图鉴（共 ${state.cards.length} 张）</h4>
+    <div class="cards-grid">${cards}</div>
+    <h4>五子棋</h4>
+    <p>点击棋盘交叉点落子；夜乃樱的棋由内置 AI 按当前难度代算，落子理由会写进对局记录。开局时各掷一次骰子决定先后手。</p>
+    <p style="margin-top:10px"><button style="border:none;border-radius:999px;padding:8px 22px;background:var(--blue);color:#fff;font-weight:700;cursor:pointer" onclick="document.getElementById('help-modal').classList.remove('show')">知道了</button></p>`;
+  $("#help-modal").classList.add("show");
+  state.helpOpen = true;
+}
+$("#help-modal").addEventListener("click", (e) => {
+  if (e.target.id === "help-modal") e.currentTarget.classList.remove("show");
+});
+
+drawDie(6);
+render();
+poll();
+setInterval(poll, 1000);
+</script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+
+# 本地运行产物
+sakura_boardgame/data/
+boardgame_preview_data/
+dist/
+?*.zip

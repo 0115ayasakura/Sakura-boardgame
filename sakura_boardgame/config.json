@@ -1,0 +1,9 @@
+{
+  "map_kind": "city",
+  "dice_sides": 6,
+  "track_length": 28,
+  "gomoku_level": 2,
+  "gomoku_style": 45,
+  "auto_open_board": true,
+  "auto_narrate": true
+}

@@ -1,0 +1,893 @@
+from __future__ import annotations
+
+import http.server
+import json
+import os
+import random
+import re
+import threading
+from collections import deque
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any, Callable
+
+try:                       # 个别嵌入式 Python 不带 webbrowser，不能让插件因此加载不了
+    import webbrowser
+except ImportError:        # pragma: no cover
+    webbrowser = None      # type: ignore[assignment]
+
+try:
+    from . import engine
+    from .engine import GAMES, GameError, PLAYER_LABEL, create_game, restore_game, rules_text
+except ImportError:
+    import engine  # type: ignore[no-redef]
+    from engine import (  # type: ignore[no-redef]
+        GAMES,
+        GameError,
+        PLAYER_LABEL,
+        create_game,
+        restore_game,
+        rules_text,
+    )
+
+
+STATE_FILE = "state.json"
+_FRAGMENT_ID = "local.sakura.boardgame.state"
+LOG_LIMIT = 60
+_ART_NAME_RE = re.compile(r"^(poi/)?[a-z0-9_]+\.(png|jpg|svg)$")   # poi/ 子目录放 AI 出的地标插图
+_MAX_BODY = 16 * 1024
+
+_EFFECT_DESC = {
+    "cash": lambda e: f"现金 {'+' if e['amount'] >= 0 else ''}{e['amount']}",
+    "dice_bonus": lambda e: f"下次掷骰 +{e['bonus']}",
+    "rent_free": lambda e: "免租一次",
+    "salary_next": lambda e: "下次经过起点工资翻倍",
+    "goto_start": lambda e: "传回起点并领工资",
+    "collect_each": lambda e: f"向对方收 ¥{e['amount']}",
+    "pay_each": lambda e: f"给对方付 ¥{e['amount']}",
+    "move": lambda e: f"沿路强制移动 {e['delta']} 格",
+    "skip": lambda e: "停一回合",
+}
+
+
+class BoardServer:
+    """本地棋盘服务器：/ 页面、/state 状态、/art/ 素材、POST /api/action 网页操作。"""
+
+    def __init__(self, service: "BoardgameService", plugin_dir: Path) -> None:
+        self._service = service
+        self._plugin_dir = plugin_dir
+        self._httpd: http.server.ThreadingHTTPServer | None = None
+        self._thread: threading.Thread | None = None
+        self.url = ""
+
+    def start(self) -> str:
+        if self._httpd is not None:
+            return self.url
+        handler = _make_handler(self._service, self._plugin_dir)
+        self._httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        port = self._httpd.server_address[1]
+        self.url = f"http://127.0.0.1:{port}/"
+        self._thread = threading.Thread(target=self._httpd.serve_forever, name="boardgame-board", daemon=True)
+        self._thread.start()
+        return self.url
+
+    def stop(self) -> None:
+        if self._httpd is not None:
+            self._httpd.shutdown()
+            self._httpd.server_close()
+            self._httpd = None
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+            self._thread = None
+
+
+def _make_handler(service: "BoardgameService", plugin_dir: Path):
+    board_page = plugin_dir / "board.html"
+    art_dir = plugin_dir / "art"
+    content_types = {".png": "image/png", ".jpg": "image/jpeg", ".svg": "image/svg+xml",
+                     ".html": "text/html; charset=utf-8"}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            path = self.path.split("?", 1)[0]
+            try:
+                if path in ("/", "/index.html"):
+                    self._send_file(board_page)
+                elif path == "/state":
+                    body = json.dumps(service.state_payload(), ensure_ascii=False).encode("utf-8")
+                    self._send(200, body, "application/json; charset=utf-8")
+                elif path.startswith("/art/"):
+                    name = path[len("/art/"):]
+                    if not _ART_NAME_RE.match(name):
+                        self._send(404, b"not found", "text/plain")
+                        return
+                    # /art/poi/xxx.png = AI 出的地标插图（放在 art/poi/ 子目录里）
+                    self._send_file(art_dir / name)
+                else:
+                    self._send(404, b"not found", "text/plain")
+            except OSError:
+                self._send(500, b"internal error", "text/plain")
+
+        def do_POST(self) -> None:  # noqa: N802
+            path = self.path.split("?", 1)[0]
+            if path != "/api/action":
+                self._send(404, b"not found", "text/plain")
+                return
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                if length > _MAX_BODY:
+                    self._send(413, b"too large", "text/plain")
+                    return
+                payload = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+                action = str(payload.get("action") or "")
+                arguments = payload.get("arguments") or {}
+                result = service.handle_action(action, arguments if isinstance(arguments, dict) else {})
+                body = json.dumps(result, ensure_ascii=False).encode("utf-8")
+                self._send(200, body, "application/json; charset=utf-8")
+            except (ValueError, json.JSONDecodeError) as error:
+                body = json.dumps({"ok": False, "error": f"请求无效：{type(error).__name__}"}, ensure_ascii=False).encode("utf-8")
+                self._send(400, body, "application/json; charset=utf-8")
+
+        def _send_file(self, target: Path) -> None:
+            suffix = target.suffix.lower()
+            with target.open("rb") as handle:
+                self._send(200, handle.read(), content_types.get(suffix, "application/octet-stream"))
+
+        def _send(self, code: int, body: bytes, content_type: str) -> None:
+            self.send_response(code)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: Any) -> None:  # 静默默认访问日志
+            return
+
+    return Handler
+
+
+class BoardgameService:
+    def __init__(self, config: Any, data_path: Callable[[str], Any], logger: Any,
+                 plugin_dir: Path | None = None, context: Any = None) -> None:
+        self._config = config
+        self._data_path = data_path
+        self._logger = logger
+        self._context = context
+        self._game = self._load()
+        self._version = 1
+        self._log: deque[str] = deque(maxlen=LOG_LIMIT)
+        self._last_event: dict[str, Any] | None = None
+        self._server = BoardServer(self, plugin_dir) if plugin_dir else None
+
+    # ---- 棋盘服务器 -------------------------------------------------
+
+    @property
+    def board_url(self) -> str:
+        if self._server is None:
+            return ""
+        if not self._server.url:
+            self._server.start()
+        return self._server.url
+
+    def open_in_browser(self, url: str) -> bool:
+        """用系统默认浏览器打开 url。Windows 上依次尝试几种方式，全部失败返回 False。
+
+        为什么要试多种：插件的 Python 是 Sakura 自带的嵌入式解释器，环境不保证和系统一致。
+        `webbrowser.open` 失败时是**返回 False 而不是抛异常**（这个坑之前没接住，
+        所以"打不开"的时候日志里什么都没有），`os.startfile` 走的是 ShellExecute，更直接。
+        """
+        if not url:
+            return False
+        attempts: list[tuple[str, Callable[[], Any]]] = []
+        if webbrowser is not None:
+            # 放在第一个：它失败时会明确返回 False（os.startfile 失败是静默的，无法判断）
+            attempts.append(("webbrowser.open", lambda: webbrowser.open(url)))
+        if hasattr(os, "startfile"):
+            attempts.append(("os.startfile", lambda: os.startfile(url)))
+        attempts.append(("cmd start", lambda: os.system(f'cmd /c start "" "{url}"')))
+
+        errors = []
+        for name, call in attempts:
+            try:
+                result = call()
+            except Exception as error:  # noqa: BLE001 — 任何异常都算这次失败
+                errors.append(f"{name}:{type(error).__name__}")
+                continue
+            if result is False:                            # webbrowser 明确说没打开
+                errors.append(f"{name}:返回False")
+                continue
+            self._logger.info("已请系统浏览器打开棋盘", fields={"method": name, "url": url})
+            return True
+        self._logger.warning("自动打开棋盘失败（可手动复制地址）", fields={
+            "reason_code": "BOARD_OPEN_FAILED", "url": url, "attempts": ";".join(errors)})
+        return False
+
+    def open_board(self) -> str:
+        url = self.board_url
+        if url:
+            self.open_in_browser(url)
+        return url
+
+    def open_board_message(self) -> str:
+        """设置页「打开棋盘页面」按钮回给用户的话——无论如何都把地址带上，方便手动复制。"""
+        url = self.board_url
+        if not url:
+            return "棋盘服务器没起来，稍后再试一次。"
+        if self.open_in_browser(url):
+            return f"已请系统浏览器打开棋盘：{url}"
+        return f"没能自动打开浏览器，请把这个地址复制到浏览器：{url}"
+
+    def _city_module(self) -> Any:
+        try:
+            import city_map
+        except ImportError:
+            from . import city_map
+        return city_map
+
+    def _moves_map(self) -> dict[str, list[int]] | None:
+        """每格可以走的方向。随机地图是无向图，方向没意义，就不下发。"""
+        if not self._game or self._game.kind != "monopoly":
+            return None
+        if getattr(self._game, "map_kind", "random") != "city":
+            return None
+        moves = getattr(self._game, "_moves", None)
+        if not moves:
+            return None
+        return {str(node): list(dsts) for node, dsts in moves.items()}
+
+    def _decor(self) -> dict[str, Any] | None:
+        """手工城市图的制图数据（街区/水体）。随机地图没有装饰层。"""
+        if not self._game or self._game.kind != "monopoly":
+            return None
+        if getattr(self._game, "map_kind", "random") != "city":
+            return None
+        return self._city_module().decor()
+
+    def _map_template(self) -> dict[str, Any] | None:
+        """城市图的静态模板：没开局时网页也能渲染演示棋盘，而不是退化成网格。"""
+        if str(self._config.get().get("map_kind") or "city") != "city":
+            return None
+        city_map = self._city_module()
+        cells, edges, main_path, branches = city_map.build_city()
+        return {"cells": cells, "edges": edges, "mainPath": main_path,
+                "branches": branches, "decor": city_map.decor()}
+
+    def state_payload(self) -> dict[str, Any]:
+        values = self._config.get()
+        level = int(values.get("gomoku_level") or 2)
+        style = int(values.get("gomoku_style") or 45)
+        return {
+            "version": self._version,
+            "game": self._game.to_dict() if self._game else None,
+            "log": list(self._log),
+            "lastEvent": self._last_event,
+            "boardUrl": self._server.url if self._server else "",
+            "cards": [
+                {"title": card["title"], "flavor": card["flavor"],
+                 "effect": _EFFECT_DESC.get(card["effect"]["type"], lambda e: "特殊效果")(card["effect"])}
+                for card in engine.EVENT_CARDS
+            ],
+            "edges": self._game.edges if self._game and self._game.kind == "monopoly" else None,
+            "mainPath": getattr(self._game, "main_path", None) if self._game and self._game.kind == "monopoly" else None,
+            "branches": getattr(self._game, "branches", None) if self._game and self._game.kind == "monopoly" else None,
+            "mapKind": getattr(self._game, "map_kind", "random") if self._game else None,
+            "settingMapKind": str(self._config.get().get("map_kind") or "city"),
+            "decor": self._decor(),
+            # 每格允许前往的方向（城市图的主环是单向的，网页按它画金色箭头）
+            "moves": self._moves_map(),
+            # 只在没有城市图对局时才下发模板：有对局时装饰层已经随 decor 下发，不必重复
+            "mapTemplate": None if (self._game and self._game.kind == "monopoly")
+            else self._map_template(),
+            "stats": self._game.stats() if self._game and self._game.kind == "monopoly" else None,
+            "difficulty": level,
+            "style": style,
+        }
+
+    def _touch(self, story: list[str] | None = None, status: str | None = None) -> None:
+        self._version += 1
+        if story:
+            for entry in story:
+                self._log.append(entry)
+        if status:
+            self._log.append(status)
+
+    # ---- 存档 -------------------------------------------------------
+
+    def _load(self) -> Any:
+        path = self._data_path(STATE_FILE)
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return restore_game(data)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            self._logger.warning("棋局存档读取失败，已忽略旧存档", fields={
+                "reason_code": "STATE_LOAD_FAILED",
+                "error_type": type(error).__name__,
+            })
+            return None
+
+    def _save(self) -> None:
+        if self._game is None:
+            return
+        path = self._data_path(STATE_FILE)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(self._game.to_dict(), ensure_ascii=False), encoding="utf-8")
+
+    # ---- 网页操作入口 ------------------------------------------------
+
+    def handle_action(self, action: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
+        try:
+            # 冷启动兜底：网页上直接操作时如果还没有对局，就先自己开一局。
+            # 这样"模型没调用工具"也不影响玩——网页自己就能开局。
+            if self._game is None and action in ("roll", "decide", "act_sakura", "place"):
+                kind = "gomoku" if action == "place" else "monopoly"
+                self.start({"game": kind}, skip_open=True)
+            if action == "start":
+                result = self.start({"game": str(arguments.get("game") or "")}, skip_open=True)
+                return {"ok": True, "status": result["status"]}
+            if action == "roll":
+                result = self.roll({"player": "user"})
+                return {"ok": True, "status": result["status"], "board_url": self.board_url}
+            if action == "decide":
+                result = self.decide({"action": str(arguments.get("action") or "")})
+                return {"ok": True, "status": result["status"], "board_url": self.board_url}
+            if action == "place":
+                result = self.place({"row": arguments.get("row"), "col": arguments.get("col")})
+                return {"ok": True, "status": result["status"], "board_url": self.board_url}
+            if action == "act_sakura":
+                result = self.sakura_action()
+                return {"ok": True, "status": result["status"], "narrated": result.get("narrated", False)}
+            if action == "set_difficulty":
+                level = int(arguments.get("level") or 2)
+                if level not in (1, 2, 3):
+                    raise GameError("难度只能是 1（入门）、2（进阶）、3（困难）。")
+                self._config.update({"gomoku_level": level})
+                self._version += 1
+                return {"ok": True, "status": f"五子棋难度已设为 {level}。"}
+            if action == "set_style":
+                style = int(arguments.get("style") or 45)
+                if not 0 <= style <= 100:
+                    raise GameError("棋风数值要在 0–100 之间（0 最稳健，100 最进攻）。")
+                self._config.update({"gomoku_style": style})
+                self._version += 1
+                return {"ok": True, "status": f"夜乃樱的棋风已调整为 {style}。"}
+            if action == "set_map_kind":
+                kind = str(arguments.get("kind") or "")
+                if kind not in ("city", "random"):
+                    raise GameError("地图来源只能是 city（第二横滨市）或 random（随机地图）。")
+                self._config.update({"map_kind": kind})
+                self._version += 1
+                label = "第二横滨市" if kind == "city" else "随机地图"
+                return {"ok": True, "status": f"地图来源已切到「{label}」，下一局生效。"}
+            return {"ok": False, "error": f"未知操作 {action}"}
+        except GameError as error:
+            return {"ok": False, "error": str(error)}
+        except Exception as error:  # 兜底：任何意外都不应让网页连接断开
+            self._logger.error("网页操作处理失败", fields={
+                "operation": action,
+                "reason_code": "WEB_ACTION_FAILED",
+                "error_type": type(error).__name__,
+            })
+            return {"ok": False, "error": f"操作失败（{type(error).__name__}）"}
+
+    def _pick_pending_action(self, game: Any) -> str:
+        """替夜乃樱决定待决策（岔路随机挑、地产按现金买/升级/跳过）。"""
+        pending = game.pending
+        if pending.get("type") == "route":
+            return str(random.Random().choice(pending["options"]))
+        options = pending["options"]
+        price = game.current_price(game.cells[pending["cell"]])
+        if "buy" in options and game.cash["sakura"] >= price:
+            return "buy"
+        if "upgrade" in options and game.cash["sakura"] >= price // 2:
+            return "upgrade"
+        return "skip"
+
+    def sakura_action(self) -> dict[str, Any]:
+        """让夜乃樱执行她的回合动作（引擎处理 + 触发聊天反应）。
+
+        **一次点按走完整个回合**：掷骰后如果路上连续遇到岔路（或者落点又要买地），
+        以前每遇到一个待决策就停下、要玩家再点一次；现在循环把所有属于她的决策都处理完，
+        直到步数走完、回合交给玩家为止。
+        """
+        if self._game is None:
+            raise GameError("当前没有进行中的对局，先开局。")
+        game = self._game
+        if game.winner:
+            raise GameError("对局已经结束，先开新一局吧。")
+
+        if game.kind == "gomoku":
+            if game.turn != "sakura":
+                raise GameError("现在轮到玩家行动，不需要夜乃樱动作。")
+            result = self.place({"player": "sakura"})
+            self._notify_sakura(result["status"])
+            return {**result, "narrated": True}
+
+        last: dict[str, Any] = {}
+        steps = 0
+        while steps < 12:                      # 安全上限：正常一回合不会处理这么多次
+            steps += 1
+            if game.winner:
+                break
+            if game.pending:
+                if game.pending["player"] != "sakura":
+                    break                      # 轮到她等玩家决定，交给玩家点
+                last = self.decide({"action": self._pick_pending_action(game), "player": "sakura"})
+                continue
+            if game._walk is not None:         # 还有步数没走完（理论上引擎会自动推进）
+                last = self.state()
+                continue
+            if game.turn != "sakura":
+                break
+            last = self.roll({"player": "sakura"})
+            if game.pending or game._walk is not None:
+                continue                       # 还有她的决策/步数，继续处理
+            break
+
+        status = last.get("status") or "夜乃樱的回合已结束。"
+        self._notify_sakura(status)
+        return {**last, "status": status, "narrated": True}
+
+    def _notify_sakura(self, summary: str) -> None:
+        """通过手机通道让夜乃樱对局势做出反应（聊天记录可见；桌面气泡可能不实时弹出）。
+
+        措辞要写清"这一步已经执行完了"：否则她只会解说、还可能说成"我这边打不开/没法操作"。
+        实测光写"做出简短反应"她确实只说话不动手——所以这里明确告诉她不需要再调用工具。
+        """
+        values = self._config.get()
+        if not values.get("auto_narrate", True) or self._context is None:
+            return
+        try:
+            character = self._context.get("sakura.host.character")
+            mobile = self._context.get("sakura.host.mobile")
+            if character is None or mobile is None:
+                return
+            current = character.current()
+            mobile.begin(self._context.plugin_id, current["id"],
+                         f"（桌游播报：{summary} 这一步操作已经由程序执行完毕，你不需要再调用任何工具；"
+                         f"请只用你的语气对局势说一句简短反应，不要复述播报内容。）")
+        except Exception as error:
+            self._logger.warning("触发夜乃樱反应失败", fields={
+                "reason_code": "SAKURA_NOTIFY_FAILED",
+                "error_type": type(error).__name__,
+            })
+
+    # ---- 工具回调 ---------------------------------------------------
+
+    def start(self, arguments: Mapping[str, Any], skip_open: bool = False) -> dict[str, Any]:
+        kind = str(arguments.get("game") or "").strip()
+        first = str(arguments.get("first") or "dice").strip()
+        if kind == "monopoly" and first not in PLAYER_LABEL:
+            first = "user"  # 大富翁在同一条地图上，先后手只影响谁先掷骰
+        if first not in PLAYER_LABEL and first != "dice":
+            raise GameError("first 只能是 user、sakura 或 dice。")
+        values = self._config.get()
+        game = create_game(
+            kind,
+            first,
+            dice_sides=int(values.get("dice_sides") or 6),
+            map_size=int(values.get("track_length") or 28),
+            map_kind=str(values.get("map_kind") or "city"),
+        )
+        self._game = game
+        self._save()
+        opening = f"新对局开始：{game.summary()} 先手：{PLAYER_LABEL[first if first in PLAYER_LABEL else game.turn]}。"
+        self._touch(
+            [f"—— 新对局开始：{game.kind}，先手 {PLAYER_LABEL[game.turn]} ——"],
+            opening,
+        )
+        if game.kind == "gomoku":
+            rolls = game.first_rolls
+            dice_note = (f"先后手骰：玩家 {rolls['user']} 点，夜乃樱 {rolls['sakura']} 点 —— "
+                         f"{PLAYER_LABEL[game.turn]}先手。")
+            self._touch([dice_note], None)
+            self._last_event = {"kind": "first_roll", "user": rolls["user"], "sakura": rolls["sakura"],
+                                "first": game.turn}
+            opening += " " + dice_note
+        self._logger.info("新对局已开始", fields={"game": game.kind, "first": game.turn})
+        board_url = self.board_url
+        want_open = bool(not skip_open and values.get("auto_open_board", True))
+        opened = self.open_in_browser(board_url) if (want_open and board_url) else False
+        if board_url:
+            # 把地址写进返回文本：即使系统没弹出浏览器，旦那さま也能直接点/复制这个链接
+            if opened:
+                hint = "已自动打开"
+            elif want_open:
+                hint = "没能自动打开，请把下面这个地址复制到浏览器"
+            else:
+                hint = "已关闭自动打开，请复制到浏览器"
+            opening += f"\n棋盘页面（{hint}）：{board_url}"
+        return {
+            "active": True,
+            "game": game.kind,
+            "first": game.turn,
+            "status": opening,
+            "rules": rules_text(game),
+            "board": game.render(),
+            "board_url": board_url,
+            "narration_hint": "用你的角色语气开场：宣布开局、说明先手（五子棋是先掷骰比大小决定的），并告诉对方网页棋盘已经打开。",
+        }
+
+    def state(self, _arguments: Mapping[str, Any]) -> dict[str, Any]:
+        if self._game is None:
+            return {
+                "active": False,
+                "status": "当前没有进行中的对局。可以先问用户想玩什么，再调用 boardgame_start。",
+                "board_url": self.board_url,
+            }
+        game = self._game
+        result: dict[str, Any] = {
+            "active": True,
+            "game": game.kind,
+            "status": game.summary(),
+            "board": game.render(),
+            "board_url": self.board_url,
+        }
+        if game.kind == "gomoku" and not game.winner:
+            threats = game.threat_text()
+            if threats:
+                result["threats"] = threats
+        if game.kind == "monopoly":
+            if game.pending:
+                result["pending"] = game.pending
+                result["status"] += f" 待决策：{PLAYER_LABEL[game.pending['player']]}——{game._pending_label()}，处理后才能继续。"
+            if game._walk:
+                result["status"] += f" {PLAYER_LABEL[game._walk['player']]}走格子中，还剩 {game._walk['steps_left']} 步。"
+        return result
+
+    def roll(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
+        player = str(arguments.get("player") or "").strip()
+        if player not in PLAYER_LABEL:
+            raise GameError("player 只能是 user 或 sakura。")
+        if self._game is None:
+            raise GameError("当前没有进行中的对局，先调用 boardgame_start。")
+        if self._game.kind != "monopoly":
+            raise GameError("当前对局是五子棋，没有掷骰；落子请用 boardgame_place。")
+        result = self._game.roll(player)
+        self._save()
+        status = self._monopoly_status(result)
+        if result.get("dice"):
+            # path 供网页播放棋子逐格移动的动画
+            self._last_event = {"kind": "move", "player": player, "dice": result["dice"],
+                                "path": list(result.get("path") or [])}
+        self._touch(result.get("story"), status)
+        return {**result, "status": status, "board_url": self.board_url}
+
+    def decide(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
+        action = str(arguments.get("action") or "").strip()
+        if not action:
+            raise GameError("要给出决策内容。")
+        if self._game is None:
+            raise GameError("当前没有进行中的对局，先调用 boardgame_start。")
+        if self._game.kind != "monopoly":
+            raise GameError("当前对局没有地产决策或路线选择。")
+        if self._game.pending is None:
+            raise GameError("当前没有待决策，正常掷骰就行。")
+        player = str(arguments.get("player") or self._game.pending["player"]).strip()
+        result = self._game.decide(player, action)
+        self._save()
+        status = "".join(result["story"])
+        if result["winner"]:
+            status += f"{PLAYER_LABEL[result['winner']]}获胜，对局结束！"
+        elif result.get("next"):
+            status += f"轮到 {PLAYER_LABEL[result['next']]}。"
+        elif self._game._walk:
+            status += f"还剩 {self._game._walk['steps_left']} 步没走完。"
+        self._touch(result["story"], status)
+        return {**result, "status": status, "board_url": self.board_url}
+
+    def place(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
+        if self._game is None:
+            raise GameError("当前没有进行中的五子棋对局，先调用 boardgame_start。")
+        if self._game.kind != "gomoku":
+            raise GameError("当前对局不是五子棋，落子工具用不上。")
+        player = str(arguments.get("player") or self._game.turn).strip()
+        row = arguments.get("row")
+        col = arguments.get("col")
+        if row is None or col is None:
+            if player != "sakura":
+                raise GameError("只有夜乃樱的落子可以由 AI 代算；请给出 row/col。")
+            values = self._config.get()
+            level = int(values.get("gomoku_level") or 2)
+            style = int(values.get("gomoku_style") or 45)
+            aggression = max(0.0, min(1.0, style / 100.0))
+            result, reason = self._game.ai_move(player, level, aggression)
+            status = f"夜乃樱落子 ({result['move'][0]},{result['move'][1]})——{reason}。"
+        else:
+            result = self._game.place(player, int(row), int(col))
+            status = f"{PLAYER_LABEL[result['player']]}落子 ({row},{col})。"
+        if result["winner"]:
+            status += f"{PLAYER_LABEL[result['winner']]}连成五子，对局结束！"
+        else:
+            status += f"轮到 {PLAYER_LABEL[result['next']]}。"
+        if result["threats"]:
+            status += f"局势：{result['threats']}。"
+        self._last_event = {"kind": "place", "player": result["player"], "move": result["move"]}
+        self._touch([status], None)
+        return {**result, "status": status, "board_url": self.board_url}
+
+    def end(self, _arguments: Mapping[str, Any]) -> dict[str, Any]:
+        if self._game is None:
+            return {"status": "当前没有进行中的对局。"}
+        summary = f"对局结束：{self._game.summary()} 共 {self._game.move_count} 手。"
+        if self._game.winner:
+            summary += f"赢家：{PLAYER_LABEL[self._game.winner]}。"
+        self._game = None
+        self._last_event = None
+        path = self._data_path(STATE_FILE)
+        if path.exists():
+            path.unlink()
+        self._touch(None, summary + " 存档已清除。")
+        self._logger.info("对局已手动结束")
+        return {"status": summary + " 存档已清除，随时可以开始新一局。", "board_url": self.board_url}
+
+    def _monopoly_status(self, result: dict[str, Any]) -> str:
+        parts = list(result.get("story") or [])
+        if result.get("winner"):
+            parts.append(f"{PLAYER_LABEL[result['winner']]}获胜，对局结束！")
+        elif result.get("pending"):
+            pending = result["pending"]
+            actor = PLAYER_LABEL[pending["player"]]
+            if pending.get("type") == "route":
+                choices = "、".join(f"#{node}" for node in pending["options"])
+                if pending["player"] == "user":
+                    parts.append(f"岔路！请玩家在网页上选路线（可选：{choices}）。")
+                else:
+                    parts.append(f"岔路！夜乃樱要选路线（可选：{choices}）。")
+            else:
+                option_labels = {"buy": "买入", "upgrade": "升级", "mortgage": "抵押", "redeem": "赎回", "sell": "卖掉", "skip": "跳过"}
+                choices = "、".join(option_labels.get(o, o) for o in pending["options"])
+                if pending["player"] == "user":
+                    parts.append(f"等玩家拿主意：向玩家说明可选项（{choices}），然后调用 boardgame_decide(action=\"…\")。")
+                else:
+                    parts.append(f"轮到夜乃樱拿主意了：可选项（{choices}），说出考虑后调用 boardgame_decide(action=\"…\", player=\"sakura\")。")
+        elif not result.get("skipped") and result.get("next"):
+            parts.append(f"轮到 {PLAYER_LABEL[result['next']]}。")
+        elif self._game and self._game._walk:
+            parts.append(f"还剩 {self._game._walk['steps_left']} 步没走完。")
+        return "".join(parts)
+
+    # ---- Prompt 上下文 ----------------------------------------------
+
+    def context_fragment(self) -> str:
+        """每轮注入的上下文。
+
+        注意：**没有对局时也要返回内容**——必须把棋盘地址塞进她的上下文里。
+        之前没对局就返回空字符串，结果"模型不调用工具"时她连地址都拿不到，
+        只能凭想象说"棋盘应该已经打开了"。
+        """
+        url = self.board_url
+        if self._game is None:
+            return (f"【棋盘游戏】当前没有进行中的对局。棋盘页面地址：{url}\n"
+                    "用户说想玩、来一局、开一局大富翁或五子棋时，调用 boardgame_start 开局；"
+                    "如果他问棋盘在哪、或者你觉得没开起来，就把上面这个地址原样给他——"
+                    "那个页面在浏览器里能直接打开，页面上也有「开一局」的按钮，不依赖工具也能玩。")
+        game = self._game
+        lines = [f"【进行中的对局】{game.summary()}", f"棋盘页面地址：{url}", game.render()]
+        if game.kind == "gomoku" and not game.winner:
+            threats = game.threat_text()
+            if threats:
+                lines.append(f"局势：{threats}。")
+        recent = list(self._log)[-5:]
+        if recent:
+            lines.append("最近动态：" + " / ".join(recent))
+        lines.append("上方的棋盘快照是权威状态，解说和落子决策以它为准，不要凭记忆复述棋盘。")
+        return "\n".join(lines)
+
+
+class BoardgamePlugin:
+    def setup(self, context: Any) -> None:
+        logger = context.get("sakura.host.logging")
+        plugin_dir = Path(__file__).resolve().parent
+        service = BoardgameService(context.config, context.data_path, logger, plugin_dir, context)
+
+        def stop_server() -> None:
+            try:
+                service._server.stop()
+            except Exception as error:
+                logger.warning("棋盘服务器清理失败", fields={
+                    "reason_code": "BOARD_SERVER_STOP_FAILED",
+                    "error_type": type(error).__name__,
+                })
+
+        context.effect(stop_server)
+        service.board_url  # 启动即监听，保证随时可打开
+        logger.info("棋盘游戏插件已初始化", fields={"games": len(GAMES)})
+
+        tools = context.get("sakura.host.tools")
+        service_tool_names: list[str] = []
+
+        def register(name: str, description: str, properties: dict[str, Any], required: list[str],
+                     handler: Callable[[Mapping[str, Any]], dict[str, Any]]) -> None:
+            tools.register(
+                {
+                    "name": name,
+                    "description": description,
+                    "parameters": {
+                        "type": "object",
+                        "properties": properties,
+                        "required": required,
+                    },
+                    "group": "boardgame",
+                    "risk": "low",
+                },
+                handler,
+            )
+            service_tool_names.append(name)
+
+        register(
+            "boardgame_start",
+            "开始一局双人游戏——**用户说想玩、来一局、开一局大富翁/五子棋时，必须调用本工具**；"
+            "只在聊天里描述是开不了棋盘的（不调用就没有棋盘页面）。"
+            "game=monopoly 是大富翁（掷骰走格、买地收租、事件卡，默认走第二横滨市城市地图），"
+            "game=gomoku 是五子棋（开局双方各掷一次骰子决定先后手）。"
+            "**返回里的 board_url 是棋盘地址，必须原样告诉用户**；返回文本里若写了「没能自动打开」，"
+            "还要提醒用户把该地址复制到浏览器。开局后向用户介绍规则和先手。",
+            {
+                "game": {"type": "string", "enum": list(GAMES), "description": "游戏类型"},
+                "first": {"type": "string", "enum": ["dice", "user", "sakura"],
+                          "description": "先手：dice 表示由骰子决定（五子棋默认），也可显式指定 user 或 sakura"},
+            },
+            ["game"],
+            service.start,
+        )
+        register(
+            "boardgame_state",
+            "查看当前对局的权威棋盘快照、轮次和棋盘地址（board_url）。忘记局面、怀疑记错、"
+            "用户询问进度或想要棋盘地址时调用。",
+            {},
+            [],
+            service.state,
+        )
+        register(
+            "boardgame_roll",
+            "大富翁掷骰：为指定玩家掷骰并自动走格子、结算事件格；遇岔路会暂停等待选路。"
+            "引擎会拒绝不属于当前回合的玩家。",
+            {"player": {"type": "string", "enum": ["user", "sakura"], "description": "本次掷骰的玩家"}},
+            ["player"],
+            service.roll,
+        )
+        register(
+            "boardgame_place",
+            "五子棋落子。轮到你时可以不填 row/col——AI 会按当前难度替你计算落子并给出理由；"
+            "也可以自己给出坐标。用户落子时必须给坐标。",
+            {
+                "row": {"type": "integer", "minimum": 1, "maximum": 15, "description": "行号 1–15，不填则由 AI 代算（仅限夜乃樱）"},
+                "col": {"type": "integer", "minimum": 1, "maximum": 15, "description": "列号 1–15，不填则由 AI 代算（仅限夜乃樱）"},
+                "player": {"type": "string", "enum": ["user", "sakura"], "description": "可省略，默认当前轮次玩家"},
+            },
+            [],
+            service.place,
+        )
+        register(
+            "boardgame_decide",
+            "大富翁决策：岔路选路时 action 填目标格编号（如 \"14\"）；地产菜单时填 buy/upgrade/mortgage/redeem/sell/skip。"
+            "引擎会在返回值里给出当前可选项。",
+            {
+                "action": {"type": "string", "description": "路线目标格编号，或地产决策 buy/upgrade/mortgage/redeem/sell/skip"},
+                "player": {"type": "string", "enum": ["user", "sakura"], "description": "可省略，默认待决策的玩家"},
+            },
+            ["action"],
+            service.decide,
+        )
+        register(
+            "boardgame_end",
+            "结束并清除当前对局存档。用户喊停或对局结束后想重开时调用。",
+            {},
+            [],
+            service.end,
+        )
+
+        context_host = context.get("sakura.host.context")
+
+        def build_context(_request: Mapping[str, Any]) -> list[dict[str, Any]]:
+            content = service.context_fragment()
+            if not content:
+                return []
+            return [{
+                "id": _FRAGMENT_ID,
+                "content": content,
+                "priority": 75,
+                "budgetHint": 1000,
+                "sensitivity": "public",
+            }]
+
+        context_host.register(
+            {
+                "providerId": "local.sakura.boardgame.state",
+                "description": "对局进行中时，把权威棋盘快照、轮次和最近动态注入 Prompt。",
+                "order": 70,
+                "enabled": True,
+            },
+            build_context,
+        )
+
+        settings = context.get("sakura.host.settings")
+        settings.register(
+            {
+                "sectionId": "boardgame",
+                "title": "棋盘游戏",
+                "order": 100,
+                "fields": [
+                    {
+                        "key": "dice_sides",
+                        "label": "骰子面数",
+                        "type": "integer",
+                        "minimum": 2,
+                        "maximum": 20,
+                        "default": 6,
+                        "description": "大富翁使用的骰子面数，新对局生效。",
+                    },
+                    {
+                        "key": "map_kind",
+                        "label": "地图来源",
+                        "type": "select",
+                        "default": "city",
+                        "options": [
+                            {"label": "第二横滨市（手工城市图）", "value": "city"},
+                            {"label": "随机地图", "value": "random"},
+                        ],
+                        "description": "城市图是固定布局的 48 格街道网络；随机图每局不同，规模由下面的随机地图规模决定。",
+                    },
+                    {
+                        "key": "track_length",
+                        "label": "地图规模",
+                        "type": "integer",
+                        "minimum": 12,
+                        "maximum": 96,
+                        "default": 28,
+                        "description": "大富翁岔路地图的格数（会取整到最接近的网格），新对局生效。",
+                    },
+                    {
+                        "key": "gomoku_level",
+                        "label": "五子棋难度",
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 3,
+                        "default": 2,
+                        "description": "1=入门 2=进阶 3=困难；也可在网页上直接切换。",
+                    },
+                    {
+                        "key": "gomoku_style",
+                        "label": "五子棋棋风",
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 100,
+                        "default": 45,
+                        "description": "0 最稳健（优先拆招），100 最进攻（优先做杀）。按角色性格调整，网页上也能改。",
+                    },
+                    {
+                        "key": "auto_open_board",
+                        "label": "自动打开棋盘页面",
+                        "type": "boolean",
+                        "default": True,
+                        "description": "开局时自动在浏览器中打开可视化棋盘。",
+                    },
+                    {
+                        "key": "auto_narrate",
+                        "label": "夜乃樱自动反应",
+                        "type": "boolean",
+                        "default": True,
+                        "description": "网页上点\"请夜乃樱行动\"时，通过手机聊天通道让她生成反应。",
+                    },
+                ],
+                "actions": [
+                    {
+                        "actionId": "openBoard",
+                        "label": "打开棋盘页面",
+                        "description": "在浏览器中打开可视化棋盘，可随时查看和操作当前对局。",
+                        "danger": False,
+                    }
+                ],
+            },
+            load=lambda: dict(context.config.get()),
+            save=lambda values: {"applicationState": context.config.update(values)},
+            actions={"openBoard": lambda _values: {"message": service.open_board_message()}},
+        )
+        # 注册完再写一行：这样日志里能分清"插件加载了"和"工具真的挂上了"
+        logger.info("棋盘游戏工具已注册", fields={
+            "tools": ", ".join(sorted(service_tool_names)),
+            "board": service.board_url,
+        })
