@@ -653,7 +653,7 @@ function renderPlayers(game) {
     const winner = game && game.winner === p;
     const active = game && !game.winner && game.turn === p;
     const avatar = p === "sakura"
-      ? `<img src="/art/avatar_sakura.png" onerror="this.outerHTML='<span class=&quot;avatar-fallback&quot;>樱</span>'" alt="">`
+      ? `<img src="/art/avatar_sakura.png" alt="">`
       : `<img src="/art/avatar_user.svg" alt="" onerror="this.outerHTML='<span class=&quot;avatar-fallback&quot;>玩</span>'">`;
     const own = stats && stats[p]
       ? `<div class="own">地产 ${stats[p].properties} 处${stats[p].mortgaged ? `（抵押 ${stats[p].mortgaged}）` : ""} · 租金收益 ¥${stats[p].income}${stats[p].monopolies.length ? ` · 垄断 ${stats[p].monopolies.join("、")}` : ""}</div>`
@@ -1163,7 +1163,9 @@ function renderGomoku(game, demo) {
   const availW = boardWrap.clientWidth - 80, availH = boardWrap.clientHeight - 150;
   const cell = Math.max(24, Math.min(46, Math.floor(Math.min(availW / (size + 1), availH / (size + 1)))));
   document.documentElement.style.setProperty("--gcell", cell + "px");
-  let html = `<div id="gomoku"><div><table>`;
+  // 注意：#action-bar 必须在这里创建——以前只有大富翁的模板里有它，
+  // 导致五子棋从来没有「请夜乃樱行动」「重开一局」任何按钮
+  let html = `<div id="action-bar"></div><div id="gomoku"><div><table>`;
   for (let tr = 0; tr <= size; tr++) {
     html += "<tr>";
     for (let tc = 0; tc <= size; tc++) {
@@ -1171,13 +1173,16 @@ function renderGomoku(game, demo) {
       if (tr === 0) { html += `<td class="head">${tc}</td>`; continue; }
       if (tc === 0) { html += `<td class="head">${tr}</td>`; continue; }
       const v = game.board[tr - 1][tc - 1];
-      const playable = !demo && !game.winner && game.turn === "user" && !v;
-      html += `<td class="${playable ? "playable" : ""}" ${playable ? `onclick="api('place',{row:${tr},col:${tc}}).then(()=>poll())"` : ""}>${v ? `<span class="stone ${v === 1 ? "user" : "sakura"}"></span>` : ""}</td>`;
+      // 演示盘也可以直接点：服务器对 place 有冷启动兜底（没开局就自动开一局五子棋），
+      // 所以点下去 = 开真局 + 落这颗子，不再让人对着一块点不动的演示盘发呆
+      const playable = !game.winner && (demo || (game.turn === "user" && !v));
+      const Stone = v ? `<span class="stone ${v === 1 ? "user" : "sakura"}"></span>` : "";
+      html += `<td class="${playable ? "playable" : ""}" ${playable ? `onclick="api('place',{row:${tr},col:${tc}}).then(()=>poll())"` : ""}>${Stone}</td>`;
     }
     html += "</tr>";
   }
   html += `</table><div class="legend">○ 玩家　● 夜乃樱</div></div></div>`;
-  boardWrap.innerHTML = html + (demo ? `<span class="demo-badge">演示棋盘</span>` : `<span class="live-badge">对局进行中</span>`);
+  boardWrap.innerHTML = html + (demo ? `<span class="demo-badge">演示棋盘 · 直接点棋盘就能开局落子</span>` : `<span class="live-badge">对局进行中</span>`);
 
   $("#info-card").style.display = "";
   // 难度与棋风：各自成行，按钮之间留出间距（之前挤成一团）

@@ -6,6 +6,7 @@ import os
 import random
 import re
 import threading
+import time
 from collections import deque
 from collections.abc import Mapping
 from pathlib import Path
@@ -51,17 +52,26 @@ _EFFECT_DESC = {
 
 
 class BoardServer:
-    """本地棋盘服务器：/ 页面、/state 状态、/art/ 素材、POST /api/action 网页操作。"""
+    """本地棋盘服务器：/ 页面、/state 状态、/art/ 素材、POST /api/action 网页操作。
+
+    带**闲时自动关闭**：一段时间没有任何请求就停掉监听（省一个线程和一个端口）；
+    下次访问 board_url 时会按需重启，对使用者透明。
+    """
+
+    IDLE_SHUTDOWN_SECONDS = 30 * 60       # 闲置 30 分钟自动关（页面下次打开会自动重启）
 
     def __init__(self, service: "BoardgameService", plugin_dir: Path) -> None:
         self._service = service
         self._plugin_dir = plugin_dir
         self._httpd: http.server.ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+        self._watchdog: threading.Timer | None = None
+        self._last_request = time.time()
         self.url = ""
 
     def start(self) -> str:
         if self._httpd is not None:
+            self._touch()
             return self.url
         handler = _make_handler(self._service, self._plugin_dir)
         self._httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -69,9 +79,33 @@ class BoardServer:
         self.url = f"http://127.0.0.1:{port}/"
         self._thread = threading.Thread(target=self._httpd.serve_forever, name="boardgame-board", daemon=True)
         self._thread.start()
+        self._touch()
         return self.url
 
+    def _touch(self) -> None:
+        """记录"刚有活动"，并重置闲时关闭的倒计时。"""
+        self._last_request = time.time()
+        if self._watchdog is not None:
+            self._watchdog.cancel()
+            self._watchdog = None
+        if self._httpd is not None:
+            self._watchdog = threading.Timer(self.IDLE_SHUTDOWN_SECONDS, self._idle_check)
+            self._watchdog.daemon = True
+            self._watchdog.start()
+
+    def _idle_check(self) -> None:
+        if self._httpd is None:
+            return
+        idle = time.time() - self._last_request
+        if idle >= self.IDLE_SHUTDOWN_SECONDS - 1:
+            self.stop()
+        else:
+            self._touch()
+
     def stop(self) -> None:
+        if self._watchdog is not None:
+            self._watchdog.cancel()
+            self._watchdog = None
         if self._httpd is not None:
             self._httpd.shutdown()
             self._httpd.server_close()
@@ -79,6 +113,8 @@ class BoardServer:
         if self._thread is not None:
             self._thread.join(timeout=5)
             self._thread = None
+        # 清掉旧地址：board_url 发现 url 为空才会按需重启（否则会拿到失效的端口）
+        self.url = ""
 
 
 def _make_handler(service: "BoardgameService", plugin_dir: Path):
@@ -89,6 +125,7 @@ def _make_handler(service: "BoardgameService", plugin_dir: Path):
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
+            service._server._touch()          # 有请求 = 页面还开着，重置闲时关闭倒计时
             path = self.path.split("?", 1)[0]
             try:
                 if path in ("/", "/index.html"):
@@ -109,6 +146,7 @@ def _make_handler(service: "BoardgameService", plugin_dir: Path):
                 self._send(500, b"internal error", "text/plain")
 
         def do_POST(self) -> None:  # noqa: N802
+            service._server._touch()
             path = self.path.split("?", 1)[0]
             if path != "/api/action":
                 self._send(404, b"not found", "text/plain")
