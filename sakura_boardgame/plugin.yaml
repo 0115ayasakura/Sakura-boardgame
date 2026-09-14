@@ -15,6 +15,7 @@ requires:
   - sakura.host.logging
   - sakura.host.character
   - sakura.host.mobile
+  - sakura.host.ui.composer-tools-v0
 presentation:
   kind: extension
   category: tools

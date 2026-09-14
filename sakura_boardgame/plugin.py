@@ -924,6 +924,52 @@ class BoardgamePlugin:
             save=lambda values: {"applicationState": context.config.update(values)},
             actions={"openBoard": lambda _values: {"message": service.open_board_message()}},
         )
+
+        # ---- 聊天输入框「+」菜单：注册「打开棋盘」入口 --------------------
+        # 宿主服务 sakura.host.ui.composer-tools-v0：register(plugin_id, descriptor, handle)。
+        # descriptor 只允许 toolId/label/description/icon/order 五个键，
+        # icon 只能取 camera/folder/globe/link/note/settings/sparkles/terminal。
+        # 回调必须以 shape="ui.composer_tool.invoke" 注册，收到一个参数 {"source": "composer"}，
+        # 返回 {"status": "completed", "message": "<=200字"}。
+        def on_composer_invoke(_payload: Mapping[str, Any]) -> dict[str, str]:
+            """点「+」菜单里的「打开棋盘」：开一局（如果没有）并打开浏览器。"""
+            url = service.board_url
+            if service._game is None:
+                result = service.start({"game": "monopoly"}, skip_open=True)
+                url = service.board_url
+                opening = (result.get("status") or "").splitlines()
+                summary = opening[0] if opening else "已开一局大富翁"
+            else:
+                summary = "继续当前对局"
+            opened = service.open_in_browser(url)
+            note = f"已打开棋盘（{summary}）：{url}" if opened else \
+                f"没能自动打开浏览器，请把这个地址复制到浏览器（{summary}）：{url}"
+            return {"status": "completed", "message": note[:200]}
+
+        def register_composer_tool() -> None:
+            composer = context.get("sakura.host.ui.composer-tools-v0")
+            if composer is None or composer is context:
+                logger.info("宿主未提供「+」菜单扩展服务，跳过注册", fields={
+                    "reason_code": "COMPOSER_TOOLS_UNAVAILABLE"})
+                return
+            try:
+                handle, _ = context._register_callback("ui.composer_tool.invoke", on_composer_invoke)
+                composer.register(context.plugin_id, {
+                    "toolId": "open_board",
+                    "label": "打开棋盘",
+                    "description": "进入下棋模式：打开网页棋盘，没有对局就自动开一局",
+                    "icon": "sparkles",
+                    "order": 50.0,
+                }, handle)
+                logger.info("「打开棋盘」已注册进聊天输入框扩展菜单")
+            except Exception as error:  # noqa: BLE001 — 扩展菜单注册失败不能拖垮插件
+                logger.warning("注册「打开棋盘」扩展菜单失败", fields={
+                    "reason_code": "COMPOSER_TOOL_REGISTER_FAILED",
+                    "error_type": type(error).__name__,
+                })
+
+        register_composer_tool()
+
         # 注册完再写一行：这样日志里能分清"插件加载了"和"工具真的挂上了"
         logger.info("棋盘游戏工具已注册", fields={
             "tools": ", ".join(sorted(service_tool_names)),
