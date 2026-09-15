@@ -369,6 +369,7 @@ class MonopolyGame:
         self._card_draws = 0
         self.cash = {"user": MONOPOLY_START_CASH, "sakura": MONOPOLY_START_CASH}
         self.skip_pending = {"user": False, "sakura": False}
+        self.last_step: dict[str, list[int] | None] = {"user": None, "sakura": None}
         self.flags = {p: {"salary_next": False, "rent_free": False, "dice_bonus": 0} for p in PLAYERS}
         self.turn = first if first in PLAYERS else "user"
         self.winner: str | None = None
@@ -898,6 +899,12 @@ class MonopolyGame:
             node = walk["path"][-1]
             neighbors = self._moves[node]
             came_from = walk["path"][-2] if len(walk["path"]) >= 2 else None
+            if came_from is None:
+                # 行走的第一步也不能原路折返：排除上一回合"最后一步的来路"
+                # （例如上回合沿 #39→#38 走完，这回合从 #38 迈第一步时不给 #39）
+                last = self.last_step.get(walk["player"])
+                if last and last[1] == node:
+                    came_from = last[0]
             options = [n for n in neighbors if n != came_from] or list(neighbors)
             if len(options) == 1:
                 self._step_to(options[0], story)
@@ -920,6 +927,9 @@ class MonopolyGame:
         player = walk["player"]
         final = walk["path"][-1]
         self._last_walk = {"player": player, "path": list(walk["path"]), "steps_left": 0}
+        # 记录最后一步（来路 → 落点）：下一回合从落点迈第一步时不许原路折返
+        if len(walk["path"]) >= 2:
+            self.last_step[player] = [walk["path"][-2], walk["path"][-1]]
         self._walk = None
         self.move_count += 1
         if self.cells[final]["type"] != "start":
@@ -950,11 +960,23 @@ class MonopolyGame:
             self._step_to(target, story)
             self._continue_walk(story)
             walk = self._walk
+            # 路径必须覆盖**走完之后**的完整轨迹：若这一步把剩余步数走完，
+            # _walk 已被清空，此时从 _last_walk 取完整路径——否则网页动画
+            # 会把棋子停在倒数第二格（实测就是"棋子停在 #2"的根因）
+            if walk:
+                path = list(walk["path"])
+                steps_left = walk["steps_left"]
+            elif self._last_walk and self._last_walk["player"] == player:
+                path = list(self._last_walk["path"])
+                steps_left = 0
+            else:
+                path = []
+                steps_left = 0
             return {
                 "player": player,
                 "action": f"route:{target}",
-                "path": list(walk["path"]) if walk else [],
-                "steps_left": walk["steps_left"] if walk else 0,
+                "path": path,
+                "steps_left": steps_left,
                 "story": story,
                 "pending": self.pending,
                 "winner": self.winner,
@@ -1243,6 +1265,8 @@ class MonopolyGame:
             "cash": dict(self.cash),
             "positions": dict(self.positions),
             "skip_pending": dict(self.skip_pending),
+            "last_step": {p: (list(self.last_step[p]) if self.last_step.get(p) else None)
+                          for p in PLAYERS},
             "flags": {p: dict(self.flags[p]) for p in PLAYERS},
             "turn": self.turn,
             "winner": self.winner,
@@ -1275,6 +1299,9 @@ class MonopolyGame:
         game.cash = {p: int(data["cash"][p]) for p in PLAYERS}
         game.positions = {p: int(data["positions"][p]) for p in PLAYERS}
         game.skip_pending = {p: bool(data["skip_pending"][p]) for p in PLAYERS}
+        # 旧存档没有 last_step 字段，容忍缺失（None = 首步不限制来路）
+        raw_last = data.get("last_step") or {}
+        game.last_step = {p: (list(raw_last[p]) if raw_last.get(p) else None) for p in PLAYERS}
         game.flags = {p: dict(data["flags"][p]) for p in PLAYERS}
         game.turn = data["turn"]
         game.winner = data["winner"]

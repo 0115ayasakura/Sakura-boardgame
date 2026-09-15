@@ -444,6 +444,7 @@ class BoardgameService:
             return {**result, "narrated": True}
 
         last: dict[str, Any] = {}
+        roll_event: dict[str, Any] | None = None
         steps = 0
         while steps < 12:                      # 安全上限：正常一回合不会处理这么多次
             steps += 1
@@ -460,11 +461,21 @@ class BoardgameService:
             if game.turn != "sakura":
                 break
             last = self.roll({"player": "sakura"})
+            # 记下她的掷骰事件：后续岔路选择会覆盖 lastEvent（且不含 dice），
+            # 不合并的话网页上她的骰子点数就不显示了
+            if self._last_event and self._last_event.get("dice"):
+                roll_event = dict(self._last_event)
             if game.pending or game._walk is not None:
                 continue                       # 还有她的决策/步数，继续处理
             break
 
         status = last.get("status") or "夜乃樱的回合已结束。"
+        # 把骰子点数合并回最终的移动事件：一次 act_sakura 里"掷骰+选路"是原子的，
+        # 网页只会看到最后一个 lastEvent——它必须同时带 dice（弹骰子动画）和 path（播移动）
+        if roll_event and self._last_event and self._last_event.get("kind") == "move":
+            self._last_event = {**self._last_event, "dice": roll_event["dice"]}
+        elif roll_event:
+            self._last_event = roll_event
         self._notify_sakura(status)
         return {**last, "status": status, "narrated": True}
 
