@@ -706,8 +706,22 @@ class MonopolyGame:
             return moves
         for i, node in enumerate(ring):
             allow(node, ring[(i + 1) % len(ring)])
+        # 主环节点的"环上位置"，用于识别与主环重叠的支路
+        ring_pos = {node: i for i, node in enumerate(ring)}
         for chain in self.branches:
             for a, b in zip(chain, chain[1:]):
+                # 与主环重叠的"支路"（两端都是环上相邻节点）只保留环的顺行方向：
+                # 双向放开会把主环的单行规则撕开（实测：河堤路沿线与主环重合，
+                # 从岔路返回主路后可以逆时针走——违反行进方向原则）。
+                if a in ring_pos and b in ring_pos:
+                    pa, pb = ring_pos[a], ring_pos[b]
+                    span = (pb - pa) % len(ring)
+                    if span == 1:
+                        allow(a, b)            # 与主环顺行同向：只留正向
+                        continue
+                    if span == len(ring) - 1:
+                        allow(b, a)            # 与主环逆行相对：只留反向中的顺行
+                        continue
                 allow(a, b)
                 allow(b, a)
         return moves
