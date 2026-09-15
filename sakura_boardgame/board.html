@@ -184,6 +184,10 @@
     50% { box-shadow: 0 0 0 9px rgba(240,180,41,0.18), 0 4px 12px rgba(60,90,150,0.45); }
   }
   #move-svg { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 5; overflow: visible; }
+  /* 岔路选点层：在棋子之上，金色圆圈可点击选方向 */
+  #hint-svg { position: absolute; left: 0; top: 0; z-index: 8; overflow: visible; }
+  #hint-svg .route-pick { cursor: pointer; }
+  #hint-svg .route-pick:hover circle { fill: rgba(240,180,41,0.5); }
 
   /* 操作条：置于棋盘上方，点起来顺手 */
   #action-bar {
@@ -347,7 +351,7 @@
 const state = { version: 0, game: null, cards: [], edges: null, stats: null, difficulty: 2, style: 45,
   log: [], lastEvent: null, tab: null, helpOpen: false, decor: null, mapTemplate: null,
   mainPath: null, branches: null, moves: null, organic: false, settingMapKind: null,
-  lastRoll: null };
+  lastRoll: null, moveAnim: null };
 const $ = (sel) => document.querySelector(sel);
 const boardWrap = $("#board-wrap");
 const NAMES = { user: "玩家", sakura: "夜乃樱" };
@@ -417,22 +421,24 @@ function tokenPos(player, node) {
   return [PX(node.x) + 44 + side + extra, PY(node.y) + 44 + drop];
 }
 function animateMove(ev) {
-  const el = boardWrap.querySelector(`.token[data-player="${ev.player}"]`);
   const game = state.game;
-  if (!el || !game || !game.cells || !ev.path || ev.path.length < 2) return;
+  if (!game || !game.cells || !ev.path || ev.path.length < 2) return;
   moveTimers.forEach(clearTimeout);
   moveTimers = [];
   cancelAnimationFrame(moveRaf);
-  const layer = boardWrap.querySelector("#move-svg");
   const nodes = ev.path.map(id => game.cells[id]).filter(Boolean);
   if (nodes.length < 2) return;
-  const offset = (ev.player === "user" ? -17 : 17) + (mapState.organic ? (ev.player === "user" ? -12 : 12) : 0);
+  const player = ev.player;
+  const offset = (player === "user" ? -17 : 17) + (mapState.organic ? (player === "user" ? -12 : 12) : 0);
   const drop = mapState.organic ? 64 : 0;   // 随机图里棋子比圆圈低一点，别挡住格子
   // 路径画成一条折线，棋子沿线滑行；顺带在每格节点上点一个点，看清经过了几格
   const pts = nodes.map(n => [PX(n.x) + 44, PY(n.y) + 44]);
+  const layer = boardWrap.querySelector("#move-svg");
   const d = smoothPath(pts, false);
-  const color = ev.player === "user" ? "#4a86c8" : "#d95a72";
+  const color = player === "user" ? "#4a86c8" : "#d95a72";
   if (layer) {
+    layer.style.transition = "none";
+    layer.style.opacity = "1";
     layer.innerHTML = `
       <path d="${d}" fill="none" stroke="#fff" stroke-width="12" stroke-linecap="round"
         stroke-linejoin="round" opacity="0.9"/>
@@ -442,34 +448,54 @@ function animateMove(ev) {
         fill="#fff" stroke="${color}" stroke-width="2.5"/>`).join("")}`;
   }
   const trace = layer ? layer.querySelector("#move-trace") : null;
-  let length = 0;
+  const length = trace ? trace.getTotalLength() : 0;
   if (trace) {
-    length = trace.getTotalLength();
     trace.style.strokeDasharray = String(length);
     trace.style.strokeDashoffset = String(length);
   }
-  const duration = 340 + 210 * (nodes.length - 1);
-  const t0 = performance.now();
-  const step = (t) => {
-    const k = Math.min(1, (t - t0) / duration);
+  const duration = Math.max(420, 300 + 190 * (nodes.length - 1));
+  // 动画状态放进全局：渲染周期随时会重建棋子元素，动画循环每帧重新查询元素，
+  // 并把"当前位置"记录下来供渲染使用 —— 重渲染不再和动画互相拉扯（抽动/终点不准的根因）。
+  // 用 setTimeout(33ms) 步进而不用 requestAnimationFrame：宿主 WebView 里 RAF 可能被节流
+  // 到完全不触发（实测 rafTicks=0），棋子会瞬移到终点。
+  state.moveAnim = { player, offset, drop, duration, t0: performance.now(),
+    current: tokenPos(player, nodes[0]), trace, length, pts };
+  const step = () => {
+    const anim = state.moveAnim;
+    if (!anim || anim.player !== player) return;      // 被更新的动画接管
+    const k = Math.min(1, (performance.now() - anim.t0) / anim.duration);
     const ease = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
-    if (trace && length) trace.style.strokeDashoffset = String(length * (1 - ease));
-    if (trace && length) {
-      const at = trace.getPointAtLength(length * ease);
-      el.style.left = (at.x + offset) + "px";
-      el.style.top = (at.y + drop) + "px";
+    if (anim.trace && anim.length) anim.trace.style.strokeDashoffset = String(anim.length * (1 - ease));
+    const at = anim.trace && anim.length
+      ? anim.trace.getPointAtLength(anim.length * ease)
+      : { x: anim.pts[0][0], y: anim.pts[0][1] };
+    anim.current = [at.x + anim.offset, at.y + anim.drop];
+    // 每帧重新拿元素：中途被 render() 重建也能继续滑
+    const el = boardWrap.querySelector(`.token[data-player="${player}"]`);
+    if (el) {
+      el.style.transition = "none";
+      el.style.left = anim.current[0] + "px";
+      el.style.top = anim.current[1] + "px";
     }
-    if (k < 1) moveRaf = requestAnimationFrame(step);
-  };
-  moveRaf = requestAnimationFrame(step);
-  // 路径留一会儿再淡出，让人看清走了哪几格
-  moveTimers.push(setTimeout(() => {
-    if (layer) layer.style.transition = "opacity .6s ease";
-    if (layer) layer.style.opacity = "0";
+    if (k < 1) { moveTimers.push(setTimeout(step, 33)); return; }
+    // 落定：以引擎的权威终点为准（不再依赖轨迹末端）
+    const lastCell = game.cells[ev.path[ev.path.length - 1]] || nodes[nodes.length - 1];
+    const fin = tokenPos(player, lastCell);
+    if (el) {
+      el.style.left = fin[0] + "px";
+      el.style.top = fin[1] + "px";
+      el.style.transition = "";
+    }
+    state.moveAnim = null;
+    // 路径留一会儿再淡出，让人看清走了哪几格
     moveTimers.push(setTimeout(() => {
-      if (layer) { layer.innerHTML = ""; layer.style.opacity = "1"; }
-    }, 650));
-  }, duration + 2600));
+      if (layer) { layer.style.transition = "opacity .6s ease"; layer.style.opacity = "0"; }
+      moveTimers.push(setTimeout(() => {
+        if (layer) { layer.innerHTML = ""; layer.style.opacity = "1"; }
+      }, 650));
+    }, 2400));
+  };
+  step();
 }
 
 async function poll() {
@@ -505,9 +531,22 @@ async function poll() {
         setTimeout(() => animateMove(data.lastEvent), 60);
       }
     }
-    if (data.log && data.log.length !== state.log.length) {
-      const fresh = data.log.slice(state.log.length);
-      state.log = data.log;
+    if (data.log && data.log.join("\n") !== (state.log || []).join("\n")) {
+      // 服务端日志是 60 条封顶的滚动队列（deque maxlen）：塞满后长度不再变化，
+      // 只比对长度会从此漏掉所有新行 —— 记录"到一半没下文"就是它。
+      // 改为按"上一条已渲染的行"在服务端日志里从尾部对齐，只追加其后的新行。
+      const prev = state.log || [];
+      const lastRendered = prev[prev.length - 1] || "";
+      let at = -1;
+      for (let i = data.log.length - 1; i >= 0; i--) {
+        if (data.log[i] === lastRendered) { at = i; break; }
+      }
+      const fresh = at >= 0 ? data.log.slice(at + 1)
+        : (data.log.length < prev.length ? data.log.slice()   // 新一局：记录被清空重放
+                                          : data.log.slice());
+      const logEl = $("#log");
+      if (at < 0 && fresh.length > 1) logEl.innerHTML = "";   // 对不上就整体重放
+      state.log = data.log.slice();
       appendLog(fresh);
       for (const line of fresh) {
         const m = line.match(/^NAVI通知【(.+?)】(.*)$/);
@@ -554,14 +593,27 @@ function drawDie(value) {
     `<span class="pip ${PIPS[Math.min(6, value)].includes(i + 1) ? "on" : ""}"></span>`).join("");
 }
 function showDice(ev) {
-  drawDie(ev.dice);
   const die = $("#die");
   die.classList.remove("rolling");
-  void die.offsetWidth;
-  die.classList.add("rolling");
-  $("#dice-info").innerHTML =
-    `<span class="who">${NAMES[ev.player] || ev.player}</span> 掷出了 <b style="color:var(--pink-deep)">${ev.dice}</b> 点<br>` +
-    `<span class="sub">${ev.dice >= 5 ? "好点子！" : ev.dice <= 2 ? "骰子大概睡着了。" : "中规中矩的一掷。"}</span>`;
+  // 快速轮换随机面 ~0.6 秒再落定真实点数：一眼看懂"掷了骰、是几点"
+  if (die._spin) clearInterval(die._spin);
+  let ticks = 0;
+  die._spin = setInterval(() => {
+    ticks += 1;
+    if (ticks >= 8) {
+      clearInterval(die._spin);
+      die._spin = null;
+      drawDie(ev.dice);
+      die.classList.remove("rolling");
+      void die.offsetWidth;
+      die.classList.add("rolling");
+      $("#dice-info").innerHTML =
+        `<span class="who">${NAMES[ev.player] || ev.player}</span> 掷出了 <b style="color:var(--pink-deep)">${ev.dice}</b> 点<br>` +
+        `<span class="sub">${ev.dice >= 5 ? "好点子！" : ev.dice <= 2 ? "骰子大概睡着了。" : "中规中矩的一掷。"}</span>`;
+    } else {
+      drawDie(1 + Math.floor(Math.random() * 6));
+    }
+  }, 70);
 }
 
 /* 骰子卡内容：大富翁=最近一次移动骰，五子棋=开局先后手骰 */
@@ -877,37 +929,98 @@ function renderMonopoly(game, demo) {
     for (const [a, b] of side) layers.push(seg(a, b, "#cbd8e8", "#eef3f9"));
   }
 
-  // 6. 可行方向：从当前格朝每个"允许走"的邻格抬一个金色箭头（城市图里这就代表单行方向）
+  // 6. 可行方向 / 岔路选路。箭头与高亮一律沿"路网几何"摆放（不再按节点直线，不会飘到路外）
   const hot = [];
+  let hintSvg = "";
   const actor = game.pending && game.pending.type === "route"
     ? game.pending.player : (game.winner ? null : game.turn);
   const walkNode = game.walk && game.walk.path && game.walk.path.length
     ? game.walk.path[game.walk.path.length - 1] : null;
+  const cameFrom = game.walk && game.walk.path && game.walk.path.length >= 2
+    ? game.walk.path[game.walk.path.length - 2] : null;
   const fromNode = walkNode !== null ? walkNode : (actor && game.positions ? game.positions[actor] : null);
+  // 从路网折线里截出"当前格 → 邻格"的那一小段（城市图的路是曲线，直接连直线会飞出路面）
+  const roadSlice = (here, nd) => {
+    const a = [cx(here), cy(here)], b = [cx(nd), cy(nd)];
+    for (const r of (decor && decor.roads) || []) {
+      const sp = toScreen(r.pts);
+      let ia = -1, ib = -1, da = 1e9, db = 1e9;
+      sp.forEach((p, i) => {
+        const d1 = (p[0] - a[0]) ** 2 + (p[1] - a[1]) ** 2;
+        const d2 = (p[0] - b[0]) ** 2 + (p[1] - b[1]) ** 2;
+        if (d1 < da) { da = d1; ia = i; }
+        if (d2 < db) { db = d2; ib = i; }
+      });
+      if (ia !== ib && Math.abs(ia - ib) <= 4) {
+        const slice = sp.slice(Math.min(ia, ib), Math.max(ia, ib) + 1);
+        return ia > ib ? slice.reverse() : slice;
+      }
+    }
+    return [a, b];       // 随机图没有路网折线，退化为直线
+  };
   if (fromNode !== null && fromNode !== undefined && game.cells[fromNode]) {
     const here = game.cells[fromNode];
-    const moves = (state.moves && state.moves[String(fromNode)]) || null;
-    const targets = moves || (game.edges || []).reduce((acc, [a, b]) => {
-      if (a === fromNode) acc.push(b);
-      else if (b === fromNode) acc.push(a);
-      return acc;
-    }, []);
-    for (const other of targets) {
+    const pendingRoute = game.pending && game.pending.type === "route"
+      && game.pending.player === actor;
+    const options = pendingRoute ? game.pending.options
+      : (state.moves && state.moves[String(fromNode)]) || (game.edges || []).reduce((acc, [a, b]) => {
+          if (a === fromNode) acc.push(b);
+          else if (b === fromNode) acc.push(a);
+          return acc;
+        }, []);
+    const choosing = !!pendingRoute;      // 岔路待选：高亮路径 + 终点可点
+    for (const other of options) {
+      if (other === cameFrom) continue;   // 不标"刚才过来的路"（引擎同样禁止原路折返）
       const nd = game.cells[other];
       if (!nd) continue;
-      const ang = Math.atan2(cy(nd) - cy(here), cx(nd) - cx(here));
-      const r = 60;
-      hot.push(chevron(cx(here) + Math.cos(ang) * r, cy(here) + Math.sin(ang) * r,
-                       ang * 180 / Math.PI, 15, "#f0b429", "0.95"));
+      const slice = roadSlice(here, nd);
+      if (choosing) {
+        // 行动路径高亮：金色粗线从当前格一直铺到可选落点
+        layers.push(`<path d="${smoothPath(slice, false)}" fill="none" stroke="#f0b429"
+          stroke-width="10" opacity="0.95" stroke-linecap="round" stroke-linejoin="round"/>`);
+        // 终点放可点击标记（显示落点名字，点它即选择）
+        const label = nd.name.length > 5 ? nd.name.slice(0, 5) : nd.name;
+        hintSvg += `<g class="route-pick" data-node="${other}">
+          <circle cx="${cx(nd).toFixed(1)}" cy="${cy(nd).toFixed(1)}" r="30"
+            fill="rgba(240,180,41,0.28)" stroke="#f0b429" stroke-width="3.5"/>
+          <text x="${cx(nd).toFixed(1)}" y="${(cy(nd) + 5).toFixed(1)}" text-anchor="middle"
+            font-size="13" font-weight="800" fill="#7a5200">${label}</text></g>`;
+      } else {
+        // 平时的小箭头：放在这段路的中点、指向行进方向
+        const mid = slice[Math.floor(slice.length / 2)];
+        const tail = slice[0], tip = slice[slice.length - 1];
+        const ang = Math.atan2(tip[1] - tail[1], tip[0] - tail[0]) * 180 / Math.PI;
+        hot.push(chevron(mid[0], mid[1], ang, 14, "#f0b429", "0.9"));
+      }
     }
   }
   svg.innerHTML = layers.join("") + hot.join("");
 
-  /* 行进方向箭头：拿真实的主环路径按弧长取点，箭头严格贴在路面上（以前按节点连线画，
-     所以会"一会在主路上、一会在主路旁"）。 */
+  /* 行进方向箭头：主环折线必须先按"行进方向"定向——折线的点序是画图定的，
+     不一定和 main_path 顺序（顺时针）同向。判据：把主环节点按顺序映射到折线最近点索引，
+     行进时索引应当总体递增；总体递减就把折线反转。 */
   const measure = svg.querySelector("#ring-measure");
   const dirLayer = svg.querySelector("#dir-layer");
-  if (measure && dirLayer) {
+  if (measure && dirLayer && ring.length > 3) {
+    const ringPts = toScreen((decor.roads || []).find(r => r.role === "ring").pts);
+    const idxOf = (cell) => {
+      let best = 0, bd = 1e12;
+      ringPts.forEach((p, i) => {
+        const d = (p[0] - cx(cell)) ** 2 + (p[1] - cy(cell)) ** 2;
+        if (d < bd) { bd = d; best = i; }
+      });
+      return best;
+    };
+    let sum = 0;
+    let prev = idxOf(game.cells[ring[0]]);
+    for (let i = 1; i < ring.length; i++) {
+      const cur = idxOf(game.cells[ring[i]]);
+      sum += Math.sign(cur - prev);
+      prev = cur;
+    }
+    const oriented = sum < 0 ? ringPts.slice().reverse() : ringPts;
+    const dPath = oriented.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ");
+    measure.setAttribute("d", dPath + " Z");
     const total = measure.getTotalLength();
     const count = Math.max(6, Math.round(total / (SPACING * 1.9)));
     const marks = [];
@@ -939,15 +1052,24 @@ function renderMonopoly(game, demo) {
     ? game.pending.player : (game.winner ? null : game.turn);
   for (const p of ["user", "sakura"]) {
     const nd = game.cells[game.positions[p]];
-    // 随机图的圆圈就在节点上，棋子要挪到圆圈下边，别把格子挡住
-    const px = PX(nd.x) + 44 + (p === "user" ? -17 : 17) + (mapState.organic ? (p === "user" ? -12 : 12) : 0);
-    const py = PY(nd.y) + 44 + (mapState.organic ? 64 : 0);
+    // 该棋子的移动动画进行中：用动画的当前坐标摆放（渲染不把棋子拽回终点——抽动的根因）
+    const anim = state.moveAnim && state.moveAnim.player === p ? state.moveAnim : null;
+    const px = anim ? anim.current[0]
+      : PX(nd.x) + 44 + (p === "user" ? -17 : 17) + (mapState.organic ? (p === "user" ? -12 : 12) : 0);
+    const py = anim ? anim.current[1]
+      : PY(nd.y) + 44 + (mapState.organic ? 64 : 0);
     frag.push(`<img class="token ${p} ${actorNow === p ? "active-turn" : ""}" data-player="${p}"
       src="${tokenImgs[p]}" style="left:${px}px;top:${py}px">`);
   }
   $("#map-canvas").insertAdjacentHTML("beforeend", frag.join(""));
   // 加一层专门画"这一步走了哪条路"的图层（在棋子下面、路网上面）
   $("#map-canvas").insertAdjacentHTML("beforeend", `<svg id="move-svg" width="${bounds.w}" height="${bounds.h}"></svg>`);
+  // 可点击的岔路选点层：在棋子之上（z-index 8），点金色圆圈即选方向
+  $("#map-canvas").insertAdjacentHTML("beforeend",
+    `<svg id="hint-svg" width="${bounds.w}" height="${bounds.h}">${hintSvg}</svg>`);
+  boardWrap.querySelectorAll("#hint-svg .route-pick").forEach(g => {
+    g.addEventListener("click", () => api("decide", { action: g.dataset.node }).then(() => poll()));
+  });
   mapState.nodeEls = {};
   boardWrap.querySelectorAll(".cell").forEach(el => { mapState.nodeEls[el.dataset.id] = el; });
 

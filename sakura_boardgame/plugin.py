@@ -613,6 +613,9 @@ class BoardgameService:
             status += f"轮到 {PLAYER_LABEL[result['next']]}。"
         elif self._game._walk:
             status += f"还剩 {self._game._walk['steps_left']} 步没走完。"
+        # 岔路选向后的继续行走也要播动画：把走过的路径交给网页
+        if result.get("path") and len(result["path"]) >= 2:
+            self._last_event = {"kind": "move", "player": player, "path": list(result["path"])}
         self._touch(result["story"], status)
         return {**result, "status": status, "board_url": self.board_url}
 
