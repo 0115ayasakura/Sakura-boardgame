@@ -184,9 +184,13 @@
     50% { box-shadow: 0 0 0 9px rgba(240,180,41,0.18), 0 4px 12px rgba(60,90,150,0.45); }
   }
   #move-svg { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 5; overflow: visible; }
-  /* 岔路选点层：在棋子之上，金色圆圈可点击选方向 */
+  /* 岔路选点层：在棋子之上，金色呼吸圈可按下选方向 */
   #hint-svg { position: absolute; left: 0; top: 0; z-index: 8; overflow: visible; }
   #hint-svg .route-pick { cursor: pointer; }
+  #hint-svg .route-pick .pick-ring { animation: pickPulse 1.4s ease-in-out infinite; }
+  @keyframes pickPulse {
+    0%, 100% { opacity: 0.75; } 50% { opacity: 1; }
+  }
   #hint-svg .route-pick:hover circle { fill: rgba(240,180,41,0.5); }
 
   /* 操作条：置于棋盘上方，点起来顺手 */
@@ -288,6 +292,15 @@
   .e-card .flavor { font-size: 13px; line-height: 1.9; color: var(--ink-dim); }
   .e-card.win { border-color: rgba(240,180,41,0.6); box-shadow: 0 0 60px rgba(240,180,41,0.4); }
   .e-card.win .from { color: var(--gold); }
+  /* 骰子弹窗：居中大骰子 */
+  .e-card.dice-pop { text-align: center; display: flex; flex-direction: column; align-items: center; }
+  .die.die-big { width: 96px; height: 96px; border-radius: 22px; padding: 16px; }
+  .die.die-big .pip { width: 14px; height: 14px; }
+  .die.die-big.rolling { animation: diceShake .45s ease; }
+  @keyframes diceShake {
+    0% { transform: rotate(0) scale(1); } 30% { transform: rotate(-14deg) scale(1.12); }
+    60% { transform: rotate(10deg) scale(1.06); } 100% { transform: rotate(0) scale(1); }
+  }
 
   #help-modal .help-box { width: min(760px, 92vw); max-height: 86vh; overflow-y: auto; padding: 24px 26px;
     border-radius: 20px; background: #fff; border: 1px solid var(--panel-line); box-shadow: var(--shadow); }
@@ -343,6 +356,12 @@
   <div class="from" id="e-card-from">NAVI 通知</div>
   <div class="title" id="e-card-title"></div>
   <div class="flavor" id="e-card-flavor"></div>
+</div></div>
+<div class="modal" id="dice-modal"><div class="e-card dice-pop" id="dice-pop">
+  <div class="from">骰子</div>
+  <div class="die die-big" id="big-die"></div>
+  <div id="dice-pop-text" style="margin-top:14px;font-weight:800;color:var(--ink)"></div>
+  <div class="sub" style="margin-top:8px;font-size:11px;color:var(--ink-dim)">点击任意处关闭</div>
 </div></div>
 <div class="modal" id="help-modal"><div class="help-box" id="help-box"></div></div>
 <div id="toast"></div>
@@ -477,6 +496,16 @@ function animateMove(ev) {
       el.style.left = anim.current[0] + "px";
       el.style.top = anim.current[1] + "px";
     }
+    // 镜头跟随：把棋子平滑移向视口中心（用户缩放保留，只动平移）
+    const vp = $("#map-viewport");
+    if (vp) {
+      const rect = vp.getBoundingClientRect();
+      const targetOx = rect.width / 2 - anim.current[0] * mapState.zoom;
+      const targetOy = rect.height / 2 - anim.current[1] * mapState.zoom;
+      mapState.ox += (targetOx - mapState.ox) * 0.12;
+      mapState.oy += (targetOy - mapState.oy) * 0.12;
+      applyTransform();
+    }
     if (k < 1) { moveTimers.push(setTimeout(step, 33)); return; }
     // 落定：以引擎的权威终点为准（不再依赖轨迹末端）
     const lastCell = game.cells[ev.path[ev.path.length - 1]] || nodes[nodes.length - 1];
@@ -593,27 +622,36 @@ function drawDie(value) {
     `<span class="pip ${PIPS[Math.min(6, value)].includes(i + 1) ? "on" : ""}"></span>`).join("");
 }
 function showDice(ev) {
-  const die = $("#die");
-  die.classList.remove("rolling");
-  // 快速轮换随机面 ~0.6 秒再落定真实点数：一眼看懂"掷了骰、是几点"
-  if (die._spin) clearInterval(die._spin);
+  // 居中弹窗 + 大骰子轮换 8 帧随机面后落定真实点数；点击任意处可提前关闭
+  const modal = $("#dice-modal");
+  const big = $("#big-die");
+  if (big._spin) clearInterval(big._spin);
+  modal.classList.add("show");
   let ticks = 0;
-  die._spin = setInterval(() => {
+  big._spin = setInterval(() => {
     ticks += 1;
     if (ticks >= 8) {
-      clearInterval(die._spin);
-      die._spin = null;
-      drawDie(ev.dice);
-      die.classList.remove("rolling");
-      void die.offsetWidth;
-      die.classList.add("rolling");
-      $("#dice-info").innerHTML =
-        `<span class="who">${NAMES[ev.player] || ev.player}</span> 掷出了 <b style="color:var(--pink-deep)">${ev.dice}</b> 点<br>` +
-        `<span class="sub">${ev.dice >= 5 ? "好点子！" : ev.dice <= 2 ? "骰子大概睡着了。" : "中规中矩的一掷。"}</span>`;
+      clearInterval(big._spin);
+      big._spin = null;
+      drawDieAt(big, ev.dice);
+      big.classList.remove("rolling");
+      void big.offsetWidth;
+      big.classList.add("rolling");
+      $("#dice-pop-text").innerHTML =
+        `<span class="who">${NAMES[ev.player] || ev.player}</span> 掷出了 <b style="color:var(--pink-deep)">${ev.dice}</b> 点`;
     } else {
-      drawDie(1 + Math.floor(Math.random() * 6));
+      drawDieAt(big, 1 + Math.floor(Math.random() * 6));
     }
   }, 70);
+  // 侧栏的小骰子卡同步显示最终点数
+  drawDieAt($("#die"), ev.dice);
+  $("#dice-info").innerHTML =
+    `<span class="who">${NAMES[ev.player] || ev.player}</span> 掷出了 <b style="color:var(--pink-deep)">${ev.dice}</b> 点<br>` +
+    `<span class="sub">${ev.dice >= 5 ? "好点子！" : ev.dice <= 2 ? "骰子大概睡着了。" : "中规中矩的一掷。"}</span>`;
+}
+function drawDieAt(die, value) {
+  die.innerHTML = Array.from({ length: 9 }, (_, i) =>
+    `<span class="pip ${PIPS[Math.min(6, value)].includes(i + 1) ? "on" : ""}"></span>`).join("");
 }
 
 /* 骰子卡内容：大富翁=最近一次移动骰，五子棋=开局先后手骰 */
@@ -958,35 +996,58 @@ function renderMonopoly(game, demo) {
     }
     return [a, b];       // 随机图没有路网折线，退化为直线
   };
+  // 某格的可行前进方向（不含来路）：优先用引擎的 moves，随机图回退到边表
+  const forwardOf = (node, came) => {
+    const base = (state.moves && state.moves[String(node)]) || (game.edges || []).reduce((acc, [a, b]) => {
+      if (a === node) acc.push(b);
+      else if (b === node) acc.push(a);
+      return acc;
+    }, []);
+    return came === null || came === undefined ? base : base.filter(n => n !== came);
+  };
   if (fromNode !== null && fromNode !== undefined && game.cells[fromNode]) {
     const here = game.cells[fromNode];
     const pendingRoute = game.pending && game.pending.type === "route"
       && game.pending.player === actor;
     const options = pendingRoute ? game.pending.options
-      : (state.moves && state.moves[String(fromNode)]) || (game.edges || []).reduce((acc, [a, b]) => {
-          if (a === fromNode) acc.push(b);
-          else if (b === fromNode) acc.push(a);
-          return acc;
-        }, []);
-    const choosing = !!pendingRoute;      // 岔路待选：高亮路径 + 终点可点
+      : forwardOf(fromNode, cameFrom);
+    const choosing = !!pendingRoute;      // 岔路待选：高亮完整路线 + 终点可点
     for (const other of options) {
       if (other === cameFrom) continue;   // 不标"刚才过来的路"（引擎同样禁止原路折返）
       const nd = game.cells[other];
       if (!nd) continue;
-      const slice = roadSlice(here, nd);
       if (choosing) {
-        // 行动路径高亮：金色粗线从当前格一直铺到可选落点
-        layers.push(`<path d="${smoothPath(slice, false)}" fill="none" stroke="#f0b429"
+        // 沿这个方向一直走：自动直行（只有一条前进路时继续），直到遇到新岔路（≥2 前进方向）
+        // 或死路（0 条）—— 高亮出"这个选择会把你带到哪"，而不是只画第一格
+        const cellsAhead = [fromNode, other];
+        let cur = other, came = fromNode;
+        for (let guard = 0; guard < 24; guard++) {
+          const fwd = forwardOf(cur, came).filter(n => !cellsAhead.includes(n));
+          if (fwd.length !== 1) break;    // 新岔路 / 死路 / 环回：到此为止
+          came = cur; cur = fwd[0];
+          cellsAhead.push(cur);
+        }
+        // 逐段取路网几何拼出完整高亮线
+        let pts = [];
+        for (let i = 0; i + 1 < cellsAhead.length; i++) {
+          const slice = roadSlice(game.cells[cellsAhead[i]], game.cells[cellsAhead[i + 1]]);
+          pts.push(...(i ? slice.slice(1) : slice));
+        }
+        if (pts.length < 2) pts = [[cx(here), cy(here)], [cx(nd), cy(nd)]];
+        layers.push(`<path d="${smoothPath(pts, false)}" fill="none" stroke="#f0b429"
           stroke-width="10" opacity="0.95" stroke-linecap="round" stroke-linejoin="round"/>`);
-        // 终点放可点击标记（显示落点名字，点它即选择）
-        const label = nd.name.length > 5 ? nd.name.slice(0, 5) : nd.name;
+        // 终点标记：金色呼吸圈套在落点图钉的锚点上（落点自己的名牌就在上方，不重复写字）
+        // 终点标记：金色呼吸圈套在"走到的最后一格"上（落点自己的名牌就在上方，不重复写字）。
+        // 注意 data-node 必须是**紧邻的选项格**——引擎的 decide 只接受下一步，延伸段由引擎自动直行
+        const lastCell = game.cells[cellsAhead[cellsAhead.length - 1]];
         hintSvg += `<g class="route-pick" data-node="${other}">
-          <circle cx="${cx(nd).toFixed(1)}" cy="${cy(nd).toFixed(1)}" r="30"
-            fill="rgba(240,180,41,0.28)" stroke="#f0b429" stroke-width="3.5"/>
-          <text x="${cx(nd).toFixed(1)}" y="${(cy(nd) + 5).toFixed(1)}" text-anchor="middle"
-            font-size="13" font-weight="800" fill="#7a5200">${label}</text></g>`;
+          <circle class="pick-ring" cx="${(PX(lastCell.x) + 44).toFixed(1)}" cy="${(PY(lastCell.y) + 44).toFixed(1)}"
+            r="24" fill="rgba(240,180,41,0.18)" stroke="#f0b429" stroke-width="3.5"/>
+          <circle cx="${(PX(lastCell.x) + 44).toFixed(1)}" cy="${(PY(lastCell.y) + 44).toFixed(1)}"
+            r="7" fill="#f0b429" stroke="#fff" stroke-width="2"/></g>`;
       } else {
         // 平时的小箭头：放在这段路的中点、指向行进方向
+        const slice = roadSlice(here, nd);
         const mid = slice[Math.floor(slice.length / 2)];
         const tail = slice[0], tip = slice[slice.length - 1];
         const ang = Math.atan2(tip[1] - tail[1], tip[0] - tail[0]) * 180 / Math.PI;
@@ -1068,7 +1129,13 @@ function renderMonopoly(game, demo) {
   $("#map-canvas").insertAdjacentHTML("beforeend",
     `<svg id="hint-svg" width="${bounds.w}" height="${bounds.h}">${hintSvg}</svg>`);
   boardWrap.querySelectorAll("#hint-svg .route-pick").forEach(g => {
-    g.addEventListener("click", () => api("decide", { action: g.dataset.node }).then(() => poll()));
+    // 用 pointerdown 并阻断冒泡：viewport 的拖拽手势会在 pointerdown 捕获指针，
+    // click 事件会被它吞掉（金色圆圈点不动的根因）。改为按下即选。
+    g.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      api("decide", { action: g.dataset.node }).then(() => poll());
+    });
   });
   mapState.nodeEls = {};
   boardWrap.querySelectorAll(".cell").forEach(el => { mapState.nodeEls[el.dataset.id] = el; });
@@ -1436,6 +1503,14 @@ function openHelp() {
 }
 $("#help-modal").addEventListener("click", (e) => {
   if (e.target.id === "help-modal") e.currentTarget.classList.remove("show");
+});
+// NAVI 事件弹窗：点击画面任意处（含背板）提前关闭
+$("#card-modal").addEventListener("click", () => $("#card-modal").classList.remove("show"));
+// 骰子弹窗：点击任意处提前关闭
+$("#dice-modal").addEventListener("click", () => {
+  const big = $("#big-die");
+  if (big._spin) { clearInterval(big._spin); big._spin = null; }
+  $("#dice-modal").classList.remove("show");
 });
 
 drawDie(6);

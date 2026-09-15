@@ -869,7 +869,7 @@ class MonopolyGame:
             dice += bonus
         dice = min(dice, self.dice_sides * 2)
         self._walk = {"player": player, "steps_left": dice, "path": [self.positions[player]]}
-        story = [f"{PLAYER_LABEL[player]}掷出 {dice} 点（{'含猫的祝福 +' + str(bonus) if bonus else '裸骰'}），从 #{self.positions[player]} 出发。"]
+        story = [f"{PLAYER_LABEL[player]}掷出 {dice} 点（{'含猫的祝福 +' + str(bonus) if bonus else '裸骰'}），从 #{self.positions[player]}「{self.cells[self.positions[player]]['name']}」出发。"]
         self._continue_walk(story)
         return self._walk_result(story, dice=dice, player=player)
 
