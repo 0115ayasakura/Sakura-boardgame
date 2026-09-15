@@ -977,24 +977,17 @@ function renderMonopoly(game, demo) {
   const cameFrom = game.walk && game.walk.path && game.walk.path.length >= 2
     ? game.walk.path[game.walk.path.length - 2] : null;
   const fromNode = walkNode !== null ? walkNode : (actor && game.positions ? game.positions[actor] : null);
-  // 从路网折线里截出"当前格 → 邻格"的那一小段（城市图的路是曲线，直接连直线会飞出路面）
-  const roadSlice = (here, nd) => {
-    const a = [cx(here), cy(here)], b = [cx(nd), cy(nd)];
-    for (const r of (decor && decor.roads) || []) {
-      const sp = toScreen(r.pts);
-      let ia = -1, ib = -1, da = 1e9, db = 1e9;
-      sp.forEach((p, i) => {
-        const d1 = (p[0] - a[0]) ** 2 + (p[1] - a[1]) ** 2;
-        const d2 = (p[0] - b[0]) ** 2 + (p[1] - b[1]) ** 2;
-        if (d1 < da) { da = d1; ia = i; }
-        if (d2 < db) { db = d2; ib = i; }
-      });
-      if (ia !== ib && Math.abs(ia - ib) <= 4) {
-        const slice = sp.slice(Math.min(ia, ib), Math.max(ia, ib) + 1);
-        return ia > ib ? slice.reverse() : slice;
-      }
-    }
-    return [a, b];       // 随机图没有路网折线，退化为直线
+  // 一条图边的路网几何（服务端预计算、含折角），按 a→b 方向定向。
+  // 之前按"最近点索引"从折线现截，节点靠近别的路时会截出错段——长边斜穿地图就是它
+  const edgePts = (a, b) => {
+    const key = `${Math.min(a, b)}_${Math.max(a, b)}`;
+    const seg = decor && decor.edgeGeom && decor.edgeGeom[key];
+    if (!seg || seg.length < 2) return [[cx(game.cells[a]), cy(game.cells[a])], [cx(game.cells[b]), cy(game.cells[b])]];
+    const s0 = [PX(seg[0][0]), PY(seg[0][1])];
+    const s1 = [PX(seg[seg.length - 1][0]), PY(seg[seg.length - 1][1])];
+    const nearA = (s0[0] - cx(game.cells[a])) ** 2 + (s0[1] - cy(game.cells[a])) ** 2
+      <= (s1[0] - cx(game.cells[a])) ** 2 + (s1[1] - cy(game.cells[a])) ** 2;
+    return nearA ? seg.map(p => [PX(p[0]), PY(p[1])]) : seg.slice().reverse().map(p => [PX(p[0]), PY(p[1])]);
   };
   // 某格的可行前进方向（不含来路）：优先用引擎的 moves，随机图回退到边表
   const forwardOf = (node, came) => {
@@ -1011,7 +1004,7 @@ function renderMonopoly(game, demo) {
       && game.pending.player === actor;
     const options = pendingRoute ? game.pending.options
       : forwardOf(fromNode, cameFrom);
-    const choosing = !!pendingRoute;      // 岔路待选：高亮完整路线 + 终点可点
+    const choosing = !!pendingRoute;      // 岔路待选：高亮完整路线 + 落点可点
     for (const other of options) {
       if (other === cameFrom) continue;   // 不标"刚才过来的路"（引擎同样禁止原路折返）
       const nd = game.cells[other];
@@ -1027,29 +1020,26 @@ function renderMonopoly(game, demo) {
           came = cur; cur = fwd[0];
           cellsAhead.push(cur);
         }
-        // 逐段取路网几何拼出完整高亮线
+        // 逐段取每条图边的真实几何拼出完整高亮线（不再有跨图斜线）
         let pts = [];
         for (let i = 0; i + 1 < cellsAhead.length; i++) {
-          const slice = roadSlice(game.cells[cellsAhead[i]], game.cells[cellsAhead[i + 1]]);
-          pts.push(...(i ? slice.slice(1) : slice));
+          const seg = edgePts(cellsAhead[i], cellsAhead[i + 1]);
+          pts.push(...(i ? seg.slice(1) : seg));
         }
-        if (pts.length < 2) pts = [[cx(here), cy(here)], [cx(nd), cy(nd)]];
         layers.push(`<path d="${smoothPath(pts, false)}" fill="none" stroke="#f0b429"
           stroke-width="10" opacity="0.95" stroke-linecap="round" stroke-linejoin="round"/>`);
-        // 终点标记：金色呼吸圈套在落点图钉的锚点上（落点自己的名牌就在上方，不重复写字）
-        // 终点标记：金色呼吸圈套在"走到的最后一格"上（落点自己的名牌就在上方，不重复写字）。
-        // 注意 data-node 必须是**紧邻的选项格**——引擎的 decide 只接受下一步，延伸段由引擎自动直行
-        const lastCell = game.cells[cellsAhead[cellsAhead.length - 1]];
+        // 落点标记：呼吸圈套在**选项格**（即你选的第一步）的锚点上，按下即选；
+        // 延伸的金线展示这个选择最终会走到哪
         hintSvg += `<g class="route-pick" data-node="${other}">
-          <circle class="pick-ring" cx="${(PX(lastCell.x) + 44).toFixed(1)}" cy="${(PY(lastCell.y) + 44).toFixed(1)}"
-            r="24" fill="rgba(240,180,41,0.18)" stroke="#f0b429" stroke-width="3.5"/>
-          <circle cx="${(PX(lastCell.x) + 44).toFixed(1)}" cy="${(PY(lastCell.y) + 44).toFixed(1)}"
+          <circle class="pick-ring" cx="${cx(nd).toFixed(1)}" cy="${cy(nd).toFixed(1)}"
+            r="22" fill="rgba(240,180,41,0.18)" stroke="#f0b429" stroke-width="3.5"/>
+          <circle cx="${cx(nd).toFixed(1)}" cy="${cy(nd).toFixed(1)}"
             r="7" fill="#f0b429" stroke="#fff" stroke-width="2"/></g>`;
       } else {
-        // 平时的小箭头：放在这段路的中点、指向行进方向
-        const slice = roadSlice(here, nd);
-        const mid = slice[Math.floor(slice.length / 2)];
-        const tail = slice[0], tip = slice[slice.length - 1];
+        // 平时的小箭头：放在这条边的路网几何中点、指向行进方向
+        const seg = edgePts(fromNode, other);
+        const mid = seg[Math.floor(seg.length / 2)];
+        const tail = seg[0], tip = seg[seg.length - 1];
         const ang = Math.atan2(tip[1] - tail[1], tip[0] - tail[0]) * 180 / Math.PI;
         hot.push(chevron(mid[0], mid[1], ang, 14, "#f0b429", "0.9"));
       }
