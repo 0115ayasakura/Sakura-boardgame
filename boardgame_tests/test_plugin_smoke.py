@@ -223,7 +223,7 @@ def main() -> None:
         assert status == 200 and res["ok"] is True, res
         payload = json.loads(http_get(base + "state")[1])
         assert payload["game"]["kind"] == "monopoly" and payload["edges"]
-        assert payload["game"]["map_version"] == 4
+        assert payload["game"]["map_version"] == engine_mod.MAP_VERSION
         assert payload["game"]["map_kind"] == "city"          # 插件默认用城市地图
         assert payload["mainPath"] and payload["branches"]     # 主路与支线随载荷下发
         assert len(payload["game"]["cells"]) == payload["game"]["size"]
@@ -416,16 +416,21 @@ def main() -> None:
         assert restored["cash"] == snapshot["cash"]
         assert restored["edges"] == snapshot["edges"]
         assert restored["cells"] == snapshot["cells"]
-        assert restored["map_version"] == 4
+        assert restored["map_version"] == engine_mod.MAP_VERSION
 
-        # ---- 旧版存档被安全忽略 ----
+        # ---- 旧版存档被安全忽略，并且**网页上要留一句话**（否则看着像"新版本没生效"）----
         data_dir = pathlib.Path(tmp) / "data_old"
         data_dir.mkdir(parents=True, exist_ok=True)
         (data_dir / "state.json").write_text(
-            json.dumps({"kind": "monopoly", "cells": [], "map_version": None}), encoding="utf-8")
+            json.dumps({"kind": "monopoly", "cells": [], "map_version": engine_mod.MAP_VERSION - 1}),
+            encoding="utf-8")
         ctx4 = FakeContext(data_dir)
         plugin_module.BoardgamePlugin().setup(ctx4)
         assert ctx4.tools["boardgame_state"]({})["active"] is False
+        old_state = json.loads(http_get(ctx4.tools["boardgame_state"]({})["board_url"] + "state")[1])
+        assert old_state["game"] is None
+        assert any("旧版本的对局存档" in line for line in old_state["log"]), old_state["log"]
+        assert any("作废" in entry for entry in ctx4.logs), ctx4.logs
 
         # ---- 损坏存档被安全忽略 ----
         (data_dir / "state.json").write_text("{broken", encoding="utf-8")

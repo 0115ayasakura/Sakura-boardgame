@@ -23,6 +23,10 @@ PLAYER_LABEL = {"user": "玩家", "sakura": "夜乃樱"}
 PLAYER_MARK = {"user": "○", "sakura": "●"}
 
 # ---- 大富翁 ----
+# 存档版本：**只要改过地图结构或经济数值就必须 +1**（旧存档会连带老数值一起被读回来，
+# 表现得像"新版本没生效"）。当前 5：起始资金 1000→1400、工资 200→250、地价单位 100→60、
+# 垄断门槛 全持→五成、判定 现金→总资产。
+MAP_VERSION = 5
 # 起始资金与工资：跑批实测"一局里的钱 ÷ 棋盘总价"决定地产系统铺不铺得满。
 # 城市图 29 处地产总价 ¥3420；2 人 × ¥1000 起始只有 0.77，买走不到一半、垄断 33%；
 # 改成 2 × ¥1400（工资 ¥200→250）后比值 1.07，买走 16.8/29、垄断 56%、租金事件 5.15 笔/局。
@@ -1305,7 +1309,10 @@ class MonopolyGame:
     def to_dict(self) -> dict[str, Any]:
         return {
             "kind": self.kind,
-            "map_version": 4,
+            # 存档版本：**改过地图结构或经济数值就要 +1**，否则旧存档会把老数值（起始资金、
+            # 地价、玩家现金）整个带进新版本，看起来像"新版本没生效"。
+            # 4 → 5：起始资金 1000→1400、工资 200→250、地价单位 100→60、垄断门槛与判定规则都变了。
+            "map_version": MAP_VERSION,
             "cols": self.cols,
             "rows": self.rows,
             "size": self.size,
@@ -1335,7 +1342,7 @@ class MonopolyGame:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "MonopolyGame":
-        if data.get("map_version") != 4:
+        if data.get("map_version") != MAP_VERSION:
             raise GameError("旧版存档不兼容。")
         game = cls.__new__(cls)
         game.kind = "monopoly"

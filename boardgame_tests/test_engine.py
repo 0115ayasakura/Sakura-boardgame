@@ -636,7 +636,7 @@ def test_monopoly_serialization_pending_and_walk() -> None:
     game._dice_rng = _fake_dice(3)
     result = game.roll("user")
     data = game.to_dict()
-    assert data["map_version"] == 4
+    assert data["map_version"] == engine.MAP_VERSION
     restored = restore_game(data)
     assert restored.cash == game.cash
     assert restored.edges == game.edges and restored.cells == game.cells
@@ -812,7 +812,7 @@ def test_city_map_in_engine() -> None:
     assert game.move_count > 0
     # 存档带 map_kind / main_path / branches
     data = game.to_dict()
-    assert data["map_kind"] == "city" and data["map_version"] == 4
+    assert data["map_kind"] == "city" and data["map_version"] == engine.MAP_VERSION
     restored = engine_mod.restore_game(data)
     assert restored.map_kind == "city"
     assert restored.main_path == game.main_path

@@ -196,10 +196,11 @@ class BoardgameService:
         self._data_path = data_path
         self._logger = logger
         self._context = context
-        self._game = self._load()
+        # 先备好日志/事件这些 _load 可能要用到的东西（作废旧存档时要在网页上说一句）
         self._version = 1
         self._log: deque[str] = deque(maxlen=LOG_LIMIT)
         self._last_event: dict[str, Any] | None = None
+        self._game = self._load()
         self._server = BoardServer(self, plugin_dir) if plugin_dir else None
         self._rng = random.Random()
         self._persona = self._build_persona()
@@ -382,9 +383,20 @@ class BoardgameService:
         path = self._data_path(STATE_FILE)
         if not path.exists():
             return None
+        data: dict[str, Any] | None = None
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             return restore_game(data)
+        except GameError:
+            # 旧版本的存档（地图结构或经济数值改过）不再兼容。**一定要在网页上说一句**：
+            # 否则旧存档里的老数值（老地价、老起始资金）被读回来，看起来就像"新版本没生效"。
+            self._logger.warning("旧版存档已作废（版本不兼容）", fields={
+                "reason_code": "STATE_VERSION_OUTDATED",
+                "saved_version": data.get("map_version") if isinstance(data, dict) else None,
+            })
+            self._touch(None, "检测到旧版本的对局存档，已经作废——这一版改过地图与经济数值，"
+                              "请点「开一局 / 重开一局」开始新的对局。")
+            return None
         except (OSError, ValueError, KeyError, TypeError) as error:
             self._logger.warning("棋局存档读取失败，已忽略旧存档", fields={
                 "reason_code": "STATE_LOAD_FAILED",
