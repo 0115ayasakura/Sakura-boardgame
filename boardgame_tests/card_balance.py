@@ -7,7 +7,7 @@ from collections import Counter
 
 from pathlib import Path as _Path
 
-ROOT = _Path(__file__).resolve().parents[1]   # 仓库根目录
+ROOT = _Path(__file__).resolve().parents[1]      # 仓库根目录
 sys.path.insert(0, str(ROOT / "sakura_boardgame"))
 from engine import EVENT_CARDS
 

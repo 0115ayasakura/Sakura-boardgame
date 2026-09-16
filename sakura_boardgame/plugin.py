@@ -50,6 +50,10 @@ _EFFECT_DESC = {
     "skip": lambda e: "停一回合",
 }
 
+# 待决策选项的中文名（对局记录与模型提示共用一份，避免两处写法不一致）
+_OPTION_LABELS = {"buy": "买入", "upgrade": "升级", "mortgage": "抵押",
+                  "redeem": "赎回", "sell": "卖掉", "skip": "跳过"}
+
 
 class BoardServer:
     """本地棋盘服务器：/ 页面、/state 状态、/art/ 素材、POST /api/action 网页操作。
@@ -197,6 +201,48 @@ class BoardgameService:
         self._log: deque[str] = deque(maxlen=LOG_LIMIT)
         self._last_event: dict[str, Any] | None = None
         self._server = BoardServer(self, plugin_dir) if plugin_dir else None
+        self._rng = random.Random()
+        self._persona = self._build_persona()
+
+    # ---- 打法性格 ---------------------------------------------------
+
+    def _build_persona(self) -> dict[str, Any]:
+        """从角色卡正文推出她的下棋性格（拿不到卡就用默认）。
+
+        角色卡正文里怎么写她的性格，就直接决定她在棋盘上的四个参数（见 persona.py）：
+        留多少底金、多爱升级、多爱拐进支街、领先时会不会让玩家一手。
+        每次开局重读一次，改了角色卡不用重启插件。
+        """
+        try:
+            settings = self._config.get()
+            preset = str(settings.get("play_style") or "card")
+            persona = self._persona_module()
+            info = persona.build(self._context, preset)
+            self._logger.info("夜乃樱的打法性格已确定", fields={
+                "source": info["source"], "reserve": info["policy"]["reserve"],
+                "upgrade": info["policy"]["upgrade"], "branch": info["policy"]["branch"],
+                "mercy": info["policy"]["mercy"],
+            })
+            return info
+        except Exception as error:
+            self._logger.warning("打法性格推断失败，用默认性格", fields={
+                "reason_code": "PERSONA_FAILED", "error_type": type(error).__name__})
+            persona = self._persona_module()
+            traits = dict(persona.DEFAULT_TRAITS)
+            return {"traits": traits, "policy": persona.policy_from(traits),
+                    "text": persona.describe(traits, persona.policy_from(traits)),
+                    "source": "默认"}
+
+    @staticmethod
+    def _persona_module() -> Any:
+        try:
+            import persona
+        except ImportError:
+            from . import persona
+        return persona
+
+    def persona_text(self) -> str:
+        return str(self._persona.get("text") or "")
 
     # ---- 棋盘服务器 -------------------------------------------------
 
@@ -411,17 +457,73 @@ class BoardgameService:
             return {"ok": False, "error": f"操作失败（{type(error).__name__}）"}
 
     def _pick_pending_action(self, game: Any) -> str:
-        """替夜乃樱决定待决策（岔路随机挑、地产按现金买/升级/跳过）。"""
+        """替夜乃樱决定待决策——**按她的性格来**（参数来自角色卡，见 persona.py）。
+
+        岔路：好奇的愿意拐进支街，好胜的往自己已有地产的街区钻，其余保留随机。
+        地产：买地前先留够底金（谨慎的角色留得多，所以更不容易被账单逼到抵押），
+        升级按意愿概率决定；明显领先时偶尔会把一块地让给玩家（温柔的角色才会）。
+        """
         pending = game.pending
+        policy = self._persona.get("policy") or {}
+        traits = self._persona.get("traits") or {}
         if pending.get("type") == "route":
-            return str(random.Random().choice(pending["options"]))
+            return str(self._pick_route(game, pending["options"], policy, traits))
         options = pending["options"]
-        price = game.current_price(game.cells[pending["cell"]])
-        if "buy" in options and game.cash["sakura"] >= price:
-            return "buy"
-        if "upgrade" in options and game.cash["sakura"] >= price // 2:
-            return "upgrade"
+        cell = game.cells[pending["cell"]]
+        price = game.current_price(cell)
+        reserve = int(policy.get("reserve") or 0)
+        cash = game.cash["sakura"]
+        if "buy" in options:
+            if self._should_be_merciful(game, policy):
+                return "skip"
+            if cash >= price + reserve:
+                return "buy"
+        if "upgrade" in options and cash >= price // 2 + reserve // 2:
+            if self._rng.random() < float(policy.get("upgrade") or 0.5):
+                return "upgrade"
         return "skip"
+
+    def _pick_route(self, game: Any, options: list[Any], policy: dict[str, Any],
+                    traits: dict[str, Any]) -> Any:
+        """岔路选向：走主环还是拐支街，看她的好奇心和好胜心。"""
+        ring = set(getattr(game, "main_path", None) or [])
+        branch = float(policy.get("branch") or 0.3)
+        ambition = float(traits.get("ambition") or 0.5)
+
+        def district_pull(node: int) -> float:
+            """她在这片街区已经有多少地——越多越想往里走（好胜心的体现）。"""
+            group = (game.cells[node] or {}).get("group")
+            if not group:
+                return 0.0
+            mine = sum(1 for c in game.cells
+                       if c.get("group") == group and c.get("owner") == "sakura")
+            return min(1.0, mine / 3.0)
+
+        best, best_score = options[0], -1.0
+        for node in options:
+            on_ring = (node in ring) if ring else True
+            score = (1.0 - branch) if on_ring else branch
+            score += 0.8 * ambition * district_pull(node)
+            score += self._rng.random() * 0.4          # 留点随机，别像机器
+            if score > best_score:
+                best, best_score = node, score
+        return best
+
+    def _should_be_merciful(self, game: Any, policy: dict[str, Any]) -> bool:
+        """温柔的角色在明显领先时，偶尔把一块无主地留给玩家。"""
+        mercy = float(policy.get("mercy") or 0.0)
+        if mercy <= 0:
+            return False
+        mine = self._net_worth(game, "sakura")
+        theirs = self._net_worth(game, "user")
+        if theirs <= 0 or mine < theirs * 1.25:       # 只在她领先 25% 以上时才心软
+            return False
+        return self._rng.random() < mercy
+
+    def _net_worth(self, game: Any, player: str) -> float:
+        props = [c for c in game.cells
+                 if c["type"] == "property" and c["owner"] == player and not c["mortgaged"]]
+        return game.cash[player] + sum(game.current_price(c) for c in props) * 0.6
 
     def sakura_action(self) -> dict[str, Any]:
         """让夜乃樱执行她的回合动作（引擎处理 + 触发聊天反应）。
@@ -521,6 +623,7 @@ class BoardgameService:
             map_kind=str(values.get("map_kind") or "city"),
         )
         self._game = game
+        self._persona = self._build_persona()      # 每局重读一次角色卡，改了卡就换棋风
         self._save()
         opening = f"新对局开始：{game.summary()} 先手：{PLAYER_LABEL[first if first in PLAYER_LABEL else game.turn]}。"
         self._touch(
@@ -602,7 +705,9 @@ class BoardgameService:
             self._last_event = {"kind": "move", "player": player, "dice": result["dice"],
                                 "path": list(result.get("path") or [])}
         self._touch(result.get("story"), status)
-        return {**result, "status": status, "board_url": self.board_url}
+        # 工具指令只放进工具结果的 hint 字段（给模型看），status/对局记录里保持纯播报
+        hint = self._pending_hint(result)
+        return {**result, "status": status, "board_url": self.board_url, **({"hint": hint} if hint else {})}
 
     def decide(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         action = str(arguments.get("action") or "").strip()
@@ -628,7 +733,8 @@ class BoardgameService:
         if result.get("path") and len(result["path"]) >= 2:
             self._last_event = {"kind": "move", "player": player, "path": list(result["path"])}
         self._touch(result["story"], status)
-        return {**result, "status": status, "board_url": self.board_url}
+        hint = self._pending_hint(result)
+        return {**result, "status": status, "board_url": self.board_url, **({"hint": hint} if hint else {})}
 
     def place(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         if self._game is None:
@@ -676,6 +782,12 @@ class BoardgameService:
         return {"status": summary + " 存档已清除，随时可以开始新一局。", "board_url": self.board_url}
 
     def _monopoly_status(self, result: dict[str, Any]) -> str:
+        """写进**对局记录**（网页上那串播报）的文本，玩家会逐条读到。
+
+        这里绝不能出现"调用 boardgame_decide(action=…)"这类**给模型的工具指令**：
+        以前两种文本混在一句里，玩家就在对局记录里读到了工具调用要求。
+        给模型的提示改由 `_pending_hint()` 单独返回，只进工具结果，不进对局记录。
+        """
         parts = list(result.get("story") or [])
         if result.get("winner"):
             parts.append(f"{PLAYER_LABEL[result['winner']]}获胜，对局结束！")
@@ -687,19 +799,27 @@ class BoardgameService:
                 if pending["player"] == "user":
                     parts.append(f"岔路！请玩家在网页上选路线（可选：{choices}）。")
                 else:
-                    parts.append(f"岔路！夜乃樱要选路线（可选：{choices}）。")
+                    parts.append(f"岔路！{actor}要选路线（可选：{choices}）。")
             else:
-                option_labels = {"buy": "买入", "upgrade": "升级", "mortgage": "抵押", "redeem": "赎回", "sell": "卖掉", "skip": "跳过"}
-                choices = "、".join(option_labels.get(o, o) for o in pending["options"])
-                if pending["player"] == "user":
-                    parts.append(f"等玩家拿主意：向玩家说明可选项（{choices}），然后调用 boardgame_decide(action=\"…\")。")
-                else:
-                    parts.append(f"轮到夜乃樱拿主意了：可选项（{choices}），说出考虑后调用 boardgame_decide(action=\"…\", player=\"sakura\")。")
+                choices = "、".join(_OPTION_LABELS.get(o, o) for o in pending["options"])
+                verb = "等玩家拿主意" if pending["player"] == "user" else "轮到夜乃樱拿主意"
+                parts.append(f"{verb}：可选项（{choices}）。")
         elif not result.get("skipped") and result.get("next"):
             parts.append(f"轮到 {PLAYER_LABEL[result['next']]}。")
         elif self._game and self._game._walk:
             parts.append(f"还剩 {self._game._walk['steps_left']} 步没走完。")
         return "".join(parts)
+
+    def _pending_hint(self, result: dict[str, Any]) -> str:
+        """给模型的"下一步怎么做"提示：只在工具结果里，不进对局记录、不进播报。"""
+        pending = result.get("pending")
+        if not pending or pending.get("type") == "route":
+            return ""
+        choices = "、".join(_OPTION_LABELS.get(o, o) for o in pending["options"])
+        if pending["player"] == "user":
+            return (f"向玩家说明可选项（{choices}），让他在网页上点，或由他授权后调用 "
+                    f"boardgame_decide(action=\"…\")。")
+        return f"等她拿定主意后调用 boardgame_decide(action=\"…\", player=\"sakura\")。"
 
     # ---- Prompt 上下文 ----------------------------------------------
 
@@ -711,13 +831,18 @@ class BoardgameService:
         只能凭想象说"棋盘应该已经打开了"。
         """
         url = self.board_url
+        style = self.persona_text()
         if self._game is None:
             return (f"【棋盘游戏】当前没有进行中的对局。棋盘页面地址：{url}\n"
                     "用户说想玩、来一局、开一局大富翁或五子棋时，调用 boardgame_start 开局；"
                     "如果他问棋盘在哪、或者你觉得没开起来，就把上面这个地址原样给他——"
                     "那个页面在浏览器里能直接打开，页面上也有「开一局」的按钮，不依赖工具也能玩。")
         game = self._game
-        lines = [f"【进行中的对局】{game.summary()}", f"棋盘页面地址：{url}", game.render()]
+        lines = [f"【进行中的对局】{game.summary()}"]
+        if game.kind == "monopoly" and not game.winner:
+            # 她的下棋性格（由角色卡推出）也要进上下文，否则解说会和她的落子对不上
+            lines.append(f"你自己的打法性格：{style}。落子和场面解说都按这个性格来，不要忽冷忽热。")
+        lines += [f"棋盘页面地址：{url}", game.render()]
         if game.kind == "gomoku" and not game.winner:
             threats = game.threat_text()
             if threats:
@@ -871,6 +996,20 @@ class BoardgamePlugin:
                         "maximum": 20,
                         "default": 6,
                         "description": "大富翁使用的骰子面数，新对局生效。",
+                    },
+                    {
+                        "key": "play_style",
+                        "label": "打法性格",
+                        "type": "select",
+                        "default": "card",
+                        "options": [
+                            {"label": "跟随角色卡", "value": "card"},
+                            {"label": "稳健（留底金、不乱花钱）", "value": "steady"},
+                            {"label": "进取（抢地、升级、爱垄断）", "value": "bold"},
+                            {"label": "随性（爱拐支街逛）", "value": "casual"},
+                            {"label": "温柔（领先时手下留情）", "value": "gentle"},
+                        ],
+                        "description": "默认读角色卡正文里的性格措辞来决定她的棋风（谨慎/好胜/好奇/温柔 → 留底金、升级意愿、拐支街倾向、领先时让不让地）。改了角色卡，下一局生效。",
                     },
                     {
                         "key": "map_kind",

@@ -316,7 +316,27 @@ def _sample_polyline(pts, step: float, closed: bool):
 
 
 # ---------- 构建 ----------
+# 可购地产的目标数量（其余格子铺成事件格）。改这个数字就能调"地产密度"：
+# 27 处以上偏向大富翁（地多、租金稀），16 处左右偏向快节奏（地少、每块更值钱）。
+# 注意：减少它只是把多出来的格子变成事件格，**地图几何/街区/路网/插图都不动**，
+# 但会有一批已画好的地标不再出现在城市图上（改成"日常一幕"这类徽章格）。
+PROPERTY_TARGET = 29
+ROAD_CORNER_RADIUS = 0.55                                # 街道拐角圆弧半径（画路与高亮共用）
 STREET_GEOM: dict[str, list[tuple[float, float]]] = {}   # 画路用的街道几何（合并后的节点坐标）
+EDGE_GEOM: dict[str, list[list[float]]] = {}             # 每条图边的路网几何（网页高亮用）
+
+
+def price_unit() -> int:
+    """地价单位（地产价 = 档位 × 它）。数值跟 engine 的 MONOPOLY_PRICE_UNIT 保持一致，
+    免得两张地图两个价；单独跑本模块（校验脚本）时用同一个默认值。"""
+    try:
+        try:
+            from .engine import MONOPOLY_PRICE_UNIT
+        except ImportError:
+            from engine import MONOPOLY_PRICE_UNIT  # type: ignore[no-redef]
+        return MONOPOLY_PRICE_UNIT
+    except ImportError:
+        return 60
 
 
 def build_city():
@@ -350,14 +370,33 @@ def build_city():
         # 画路用的几何：节点**合并后**的坐标（这样每条街都精确连到共享路口）
         STREET_GEOM[name] = [(nodes[i]["x"], nodes[i]["y"]) for i in dedup]
 
+    # ---- 每条图边的路网几何：**网页实际画出来的那条路**上的一小段 ----
+    # 旧做法是拿节点去街道的原始折点上找最近折点、再截两点之间的折线段。问题是原始折点是
+    # "控制点"，节点却是沿折线按弧长采样出来的中间点，两者根本不在同一个位置：截出来的段
+    # 经常越过相邻格子（斜穿街区），闭合的主环末点绕回起点时更会把**整圈**截下来
+    # —— 网页上的金色高亮因此斜穿地图，甚至把整个主环点亮。
+    # 现在改为用**节点坐标**（与 roads() 同源）做圆角路径后再切片，端头正落在格子上，
+    # 中间必然压在路面上。
+    for name, chain in street_nodes.items():
+        pts = [(nodes[i]["x"], nodes[i]["y"]) for i in chain]
+        path, stops = _round_path_stops(pts, radius=ROAD_CORNER_RADIUS)
+        for i in range(len(chain) - 1):
+            a, b = chain[i], chain[i + 1]
+            if a == b:
+                continue
+            seg = [pts[i]] + path[stops[i] + 1:stops[i + 1]] + [pts[i + 1]]
+            key = f"{min(a, b)}_{max(a, b)}"
+            if key not in EDGE_GEOM:      # 同一条边被两条街共用时，以先建的（主环）为准
+                EDGE_GEOM[key] = [[round(x, 3), round(y, 3)] for x, y in seg]
+
     ring_ids = street_nodes["ring"]
 
     # ---- 分配格子类型：环上的地产按街区给，支街与环上余量铺事件格 ----
     prop_pool = {k: list(v) for k, v in PROPERTY_NAMES.items()}
     special_pool = list(SPECIAL_CYCLE)
     total_nodes = len(nodes)
-    # 目标：地产约占一半，其余为事件格 + 起点
-    property_target = 29
+    # 目标：地产约占一半，其余为事件格 + 起点（数量见模块级 PROPERTY_TARGET）
+    property_target = PROPERTY_TARGET
     property_count = 0
 
     def take_special():
@@ -379,7 +418,7 @@ def build_city():
         if want_property:
             key, label, tier, icon = prop_pool[district].pop(0)
             node.update({"type": "property", "name": label, "group": district,
-                         "tier": tier, "price": tier * 100, "icon": icon})
+                         "tier": tier, "price": tier * price_unit(), "icon": icon})
             property_count += 1
         else:
             kind, label, icon = take_special()
@@ -400,7 +439,7 @@ def build_city():
             if property_count < property_target and prop_pool.get(district):
                 key, label, tier, icon = prop_pool[district].pop(0)
                 node.update({"type": "property", "name": label, "group": district,
-                             "tier": tier, "price": tier * 100, "icon": icon})
+                             "tier": tier, "price": tier * price_unit(), "icon": icon})
                 property_count += 1
             else:
                 kind, label, icon = take_special()
@@ -623,6 +662,36 @@ def _round_path(pts, radius: float = 0.5, samples: int = 7) -> list[tuple[float,
     return out
 
 
+def _round_path_stops(pts, radius: float = 0.5, samples: int = 6):
+    """与 `_round_path` 同一条圆角路线，另外给出**每个原始点在输出里的下标**。
+
+    高亮线要精确贴在路面上，就得知道每个节点对应路线上的哪一点。`_round_path` 是
+    "把拐角切掉"，节点坐标本身并不在输出里，所以这里把圆弧中点（离原拐角最近的一点）
+    记为这个节点的位置。返回 (path, stops)，stops 是"序号 → path 下标"。
+    """
+    line = [tuple(p) for p in pts]
+    if len(line) < 3:
+        return line, list(range(len(line)))
+    out = [line[0]]
+    stops = [0]
+    for i in range(1, len(line) - 1):
+        prev, cur, nxt = line[i - 1], line[i], line[i + 1]
+        len_a = math.hypot(cur[0] - prev[0], cur[1] - prev[1]) or 1e-9
+        len_b = math.hypot(nxt[0] - cur[0], nxt[1] - cur[1]) or 1e-9
+        t = min(0.42, radius / len_a, radius / len_b)
+        a = (cur[0] + (prev[0] - cur[0]) * t, cur[1] + (prev[1] - cur[1]) * t)
+        b = (cur[0] + (nxt[0] - cur[0]) * t, cur[1] + (nxt[1] - cur[1]) * t)
+        stops.append(len(out) + samples // 2)
+        for k in range(samples + 1):
+            u = k / samples
+            x = (1 - u) ** 2 * a[0] + 2 * (1 - u) * u * cur[0] + u * u * b[0]
+            y = (1 - u) ** 2 * a[1] + 2 * (1 - u) * u * cur[1] + u * u * b[1]
+            out.append((round(x, 3), round(y, 3)))
+    out.append(line[-1])
+    stops.append(len(out) - 1)
+    return out, stops
+
+
 def roads() -> list[dict]:
     """街道折线**按合并后的节点坐标**输出，带圆角过渡与 role。
 
@@ -644,7 +713,7 @@ def roads() -> list[dict]:
             if near(pts[0]) and near(pts[-1]):
                 role = "artery"
         out.append({"key": name, "role": role, "closed": bool(spec["closed"]),
-                    "pts": [[x, y] for x, y in _round_path(pts, radius=0.55)]})
+                    "pts": [[x, y] for x, y in _round_path(pts, radius=ROAD_CORNER_RADIUS)]})
     return out
 
 
@@ -750,6 +819,7 @@ def decor() -> dict:
         "sea": sea(),
         "ponds": [{"x": px, "y": py, "rx": rx, "ry": ry} for px, py, rx, ry in PONDS],
         "buildings": buildings(),
+        "edgeGeom": dict(EDGE_GEOM),
         "frame": frame(),
         "world": [WORLD_W, WORLD_H],
     }

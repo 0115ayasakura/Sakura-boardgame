@@ -23,11 +23,19 @@ PLAYER_LABEL = {"user": "玩家", "sakura": "夜乃樱"}
 PLAYER_MARK = {"user": "○", "sakura": "●"}
 
 # ---- 大富翁 ----
-MONOPOLY_START_CASH = 1000
-MONOPOLY_PASS_START = 200
+# 起始资金与工资：跑批实测"一局里的钱 ÷ 棋盘总价"决定地产系统铺不铺得满。
+# 城市图 29 处地产总价 ¥3420；2 人 × ¥1000 起始只有 0.77，买走不到一半、垄断 33%；
+# 改成 2 × ¥1400（工资 ¥200→250）后比值 1.07，买走 16.8/29、垄断 56%、租金事件 5.15 笔/局。
+MONOPOLY_START_CASH = 1400
+MONOPOLY_PASS_START = 250
 MONOPOLY_TAX = 100
 MONOPOLY_BONUS = 150
 MONOPOLY_MAX_LEVEL = 1
+# 地价单位：地产价 = 档位 × 这个数（城市图 ¥60/120/180，随机图同）。原来是 100——
+# 跑批显示在"每圈一份工资"的节奏下买不起几块地（每局只买得下 5 块、垄断 6%），降到 60 后
+# 买得动、铺得开（买到的地 6.5 → 8.9 处，垄断 6% → 22%）。
+MONOPOLY_PRICE_UNIT = 60
+MONOPOLY_RENT_DIVISOR = 2       # 租金 = 现价 ÷ 这个数 × 2^等级（÷2 = 五成租金，÷1 = 等额）
 MONOPOLY_CAT_COST = 50
 MONOPOLY_CAT_GAIN = 150
 MONOPOLY_MONSTER_TOLL = 150
@@ -35,6 +43,11 @@ MONOPOLY_TRAIN_TOLL = 300
 MONOPOLY_PRICE_STEP_MOVES = 8   # 每 8 回合未购地产涨价
 MONOPOLY_PRICE_LAP_STEP = 20
 MONOPOLY_PRICE_CAP = 1.5        # 涨价上限（相对基础价）
+# ---- 平衡参数（跑批实验定的，见 boardgame_tests/econ_report.py）----
+MONOPOLY_ROUNDS_PER_CELL = 1.5  # 回合上限 = 格数 × 系数（57 格 → 86 步，每人约 1.5 圈）
+MONOPOLY_PROPERTY_SCORE = 0.6   # 终局判定时，地产按现价的几成计入总资产
+MONOPOLY_HOLD_SHARE = 0.5       # 持有一个街区多少比例的地产算"垄断"（租金翻倍）
+MONOPOLY_HOLD_MIN = 2           # 垄断至少要有几处（只有 1 处的街区不可能垄断）
 
 MONOPOLY_GROUPS = {
     "shopping": {"label": "街市", "color": "#d95a72"},
@@ -353,7 +366,7 @@ class MonopolyGame:
     地图是"节点 + 邻接边"的图：从网格点阵生成生成树，再随机补环形成岔路与回路。
     掷骰后逐步移动，遇岔路（多个前进方向）暂停等待行动方选路；
     经过或落在起点领工资；落在地产格产生决策菜单（买/升/抵/赎/卖/跳）。
-    付不起账单强制逐个抵押；破产时资产移交债主；回合上限按现金判胜负。
+    付不起账单强制逐个抵押；破产时资产移交债主；回合上限按总资产（现金 + 地产现价六成）判胜负。
     """
 
     kind = "monopoly"
@@ -381,8 +394,10 @@ class MonopolyGame:
         self.main_path: list[int] = []
         self.branches: list[list[int]] = []
         self.cells, self.edges = self._generate_map()
-        # 回合上限：约等于"地图格数"（原先 ×2 太长——城市图 57 格要打 114 回合）
-        self.max_rounds = max(30, self.size)   # 城市图会改写 size，所以要在这里重算
+        # 回合上限 = 格数 × 1.5（城市图 57 格 → 86 步）。原来是"格数"（57 步 = 双方各约 28 步
+        # ≈ 绕环 0.9 圈），一圈都绕不完：工资只能领一次、租金几乎收不到、垄断凑不齐，
+        # 跑批实测"买地的一方胜率只有 6.5%"就是这么来的。1.5 倍后每人约 1.5 圈，经济才转得动。
+        self.max_rounds = max(36, round(self.size * MONOPOLY_ROUNDS_PER_CELL))
         self._neighbors = self._build_neighbors()
         self._moves = self._build_moves()
         # 双方都从起点格出发
@@ -657,7 +672,7 @@ class MonopolyGame:
                     name = f"{MONOPOLY_GROUP_NAMES[group][0]}别馆{duplicate_counters[group]}"
                 tier = tiers[group].pop() if tiers[group] else 2
                 nodes[index].update({"type": "property", "name": name, "group": group, "tier": tier,
-                                     "price": tier * 100, "icon": poi_icon_for(name)})
+                                     "price": tier * MONOPOLY_PRICE_UNIT, "icon": poi_icon_for(name)})
             else:
                 nodes[index].update({"type": kind, "name": _CELL_NAMES[kind]})
 
@@ -770,16 +785,25 @@ class MonopolyGame:
         return min(int(cell["price"] * MONOPOLY_PRICE_CAP), inflated)
 
     def _rent(self, cell: dict[str, Any]) -> int:
-        rent = (self.current_price(cell) // 2) * (2 ** cell["level"])
+        rent = (self.current_price(cell) // MONOPOLY_RENT_DIVISOR) * (2 ** cell["level"])
         if cell["group"] and self._has_monopoly(cell["owner"], cell["group"]):
             rent *= 2
         return rent
 
     def _has_monopoly(self, player: str | None, group: str | None) -> bool:
+        """街区垄断（租金翻倍）：持有该街区至少六成地产、且至少 2 处，并且都没抵押。
+
+        以前要求"整个街区全部持有"——城市图每区 5–9 处，一局只有一圈多，
+        跑批实测 0% 的对局能凑成，翻倍租金这条规则等于不存在。
+        """
         if not player or not group:
             return False
         members = [c for c in self.cells if c["type"] == "property" and c["group"] == group]
-        return len(members) >= 2 and all(c["owner"] == player and not c["mortgaged"] for c in members)
+        if len(members) < MONOPOLY_HOLD_MIN:
+            return False
+        need = max(MONOPOLY_HOLD_MIN, math.ceil(len(members) * MONOPOLY_HOLD_SHARE))
+        owned = [c for c in members if c["owner"] == player and not c["mortgaged"]]
+        return len(owned) >= need
 
     def _player_monopolies(self, player: str) -> list[str]:
         return [g for g in MONOPOLY_GROUPS if self._has_monopoly(player, g)]
@@ -825,7 +849,7 @@ class MonopolyGame:
                 break
             index, cell = min(candidates, key=lambda pair: pair[1]["price"])
             cell["mortgaged"] = True
-            gain = cell["price"] // 2
+            gain = self.current_price(cell) // 2      # 与主动抵押同口径（都是现价的一半）
             self.cash[player] += gain
             story.append(f"抵押 {cell['name']}，回收 ¥{gain}。")
         paid = min(self.cash[player], amount)
@@ -1028,7 +1052,8 @@ class MonopolyGame:
             cell["mortgaged"] = False
             story.append(f"{PLAYER_LABEL[player]}花 ¥{cost} 赎回了「{cell['name']}」。")
         elif action == "sell":
-            value = cell["price"] // 6 if cell["mortgaged"] else cell["price"] // 3
+            # 卖出也按现价（以前用基础价，涨价后卖掉比赎回还亏）
+            value = price // 6 if cell["mortgaged"] else price // 3
             self.cash[player] += value
             cell["owner"] = None
             cell["level"] = 0
@@ -1212,17 +1237,29 @@ class MonopolyGame:
     # ---- 结算与展示 -------------------------------------------------
 
     def _settle(self) -> str:
-        def score(player: str) -> tuple[int, int]:
-            props = sum(1 for cell in self.cells if cell["type"] == "property" and cell["owner"] == player)
-            return (self.cash[player], props)
+        """回合上限结算：按**总资产**判定（现金 + 地产现价 × 六成）。
 
-        user_score = score("user")
-        sakura_score = score("sakura")
-        if user_score >= sakura_score:
-            self.winner = "user"
-            return f"回合数达到上限（{self.max_rounds} 回合），按现金判定：玩家 ¥{user_score[0]}（{user_score[1]} 处地产）对夜乃樱 ¥{sakura_score[0]}（{sakura_score[1]} 处地产），玩家获胜！"
-        self.winner = "sakura"
-        return f"回合数达到上限（{self.max_rounds} 回合），按现金判定：夜乃樱 ¥{sakura_score[0]}（{sakura_score[1]} 处地产）对玩家 ¥{user_score[0]}（{user_score[1]} 处地产），夜乃樱获胜！"
+        以前只看现金——买地等于把现金换成不计分的资产，于是"全程不买地"严格占优
+        （跑批配对实验：买地那方胜率 6.5%，攒钱那方 93.5%）。改成总资产后，
+        买地方回到 51% 左右。抵押出去的地产已经拿过一半现钱，不再重复计入。
+        """
+        def net_worth(player: str) -> tuple[float, int, int]:
+            props = [c for c in self.cells if c["type"] == "property" and c["owner"] == player]
+            held = sum(self.current_price(c) for c in props if not c["mortgaged"]) * MONOPOLY_PROPERTY_SCORE
+            score = self.cash[player] + held
+            return (score, self.cash[player], len(props))
+
+        user_score = net_worth("user")
+        sakura_score = net_worth("sakura")
+
+        def describe(player: str, s: tuple[float, int, int]) -> str:
+            return f"总资产 ¥{s[0]:.0f}（现金 ¥{s[1]} + 地产 {s[2]} 处）"
+
+        winner = "user" if user_score >= sakura_score else "sakura"
+        self.winner = winner
+        return (f"回合数达到上限（{self.max_rounds} 回合），按总资产判定："
+                f"玩家 {describe('user', user_score)} 对 夜乃樱 {describe('sakura', sakura_score)}，"
+                f"{PLAYER_LABEL[winner]}获胜！")
 
     def _maybe_settle(self, story: list[str]) -> None:
         if self.winner is None and self.pending is None and not self._walk and self.move_count >= self.max_rounds:
@@ -1368,11 +1405,11 @@ def rules_text(game: GomokuGame | MonopolyGame) -> str:
             "**主环是单向的**——行进方向由地图规定，从起点出发第一格就是学园正门；"
             "支街是双向的，可以拐进去再退出来。走到路口（有多个可行方向）会暂停，"
             "由当前行动方选择走哪一格，选完继续走完剩余步数。经过或落在起点领工资。"
-            "地产分四组（学园区/街市/住宅区/荒废街区），同组全持且无抵押时租金翻倍。"
+            "地产分四组（学园区/街市/住宅区/荒废街区），持有同组六成且无抵押时租金翻倍。"
             "走到无主地产且现金够时会暂停询问是否购买；走回自己的地产可以升级（租金翻倍）、抵押（回收半价，期间不收租）、"
             "赎回（付六成价）或卖掉（回收三分之一）——此时先向用户说明选项或说出你的决定，再调用 boardgame_decide(action=…)。"
             "踩到他人地产自动付租金；税格扣钱、赏格加钱、猫格喂猫、怪獣格遇袭、黑列车格交车票钱、问号格由 NAVI 推送事件卡。"
-            "付不起账单会被强制抵押地产，破产时资产移交债主；回合数到上限后按现金判胜负。掷骰用 boardgame_roll。"
+            "付不起账单会被强制抵押地产，破产时资产移交债主；回合数到上限后按总资产（现金 + 地产现价六成）判胜负。掷骰用 boardgame_roll。"
         )
     return (
         "规则：十五路棋盘，横竖斜先连成五子者胜。工具调用方式：用户落子后你先点评上一手；"

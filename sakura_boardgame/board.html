@@ -17,6 +17,8 @@
     --blue-deep: #4a86c8;
     --gold: #f0b429;
     --green: #67c58f;
+    /* 本回合出发格：紫色在地图配色里没用过（金=路线/蓝红=双方棋子/四个街区的蓝红绿灰），不会撞色 */
+    --start: #8b5cf6;
     --danger: #e8637e;
     --shadow: 0 6px 22px rgba(90, 120, 180, 0.16);
   }
@@ -91,8 +93,8 @@
   /* ---------- 地标 = 地图图钉（钉尖指向路线上的点，路线不被盖住） ---------- */
   .cell {                                  /* 图钉容器：底边中点钉在路线节点上 */
     position: absolute;
-    /* 往上抬 PIN_LIFT：钉尖落在路面**边缘**而不是路中心，所有图钉与路的间距就统一了 */
-    transform: translate(-50%, calc(-100% - 22px));
+    /* 往上抬一点：钉尖压在路面上、不盖住路中心（具体抬多少见 applyTransform，随地图类型不同） */
+    transform: translate(-50%, calc(-100% - 8px));
     transform-origin: 50% 100%;
     display: flex; flex-direction: column; align-items: center;
     z-index: 3; will-change: transform; transition: transform .18s ease-out;
@@ -191,7 +193,19 @@
   @keyframes pickPulse {
     0%, 100% { opacity: 0.75; } 50% { opacity: 1; }
   }
-  #hint-svg .route-pick:hover circle { fill: rgba(240,180,41,0.5); }
+  /* 只让呼吸圈和中心点变色；点区域那个透明大圆不能跟着填充，否则会糊成一大块黄 */
+  #hint-svg .route-pick:hover .pick-ring,
+  #hint-svg .route-pick:hover .pick-dot { fill: rgba(240,180,41,0.5); }
+  /* 本回合出发格：紫色虚线圈，缓慢自转——和金色实线圈（可走路线/落点）一眼分得开。
+     圈下面是白描边（和地图上其它标记一样），压在棋子/插图上也能读清；
+     它不可点击，所以不会抢金色选点圈的按下。
+     自转靠 CSS 动画；万一宿主 WebView 不给动画，它也只是静静地待在原地。 */
+  #hint-svg .turn-start { pointer-events: none; }
+  #hint-svg .turn-start .ts-ring {
+    transform-box: fill-box; transform-origin: center;
+    animation: tsSpin 9s linear infinite;
+  }
+  @keyframes tsSpin { to { transform: rotate(360deg); } }
 
   /* 操作条：置于棋盘上方，点起来顺手 */
   #action-bar {
@@ -399,7 +413,7 @@ const ICONS = {
 };
 const TYPE_HELP = {
   start: "起点：经过或落在这里领工资 ¥200。",
-  property: "地产：可以买地、收租、升级；同色全买有垄断加成。",
+  property: "地产：可以买地、收租、升级；持有一个街区六成的地产就有垄断加成。",
   tax: "特别会计：缴税 ¥100。",
   bonus: "学园补助：直接 +¥150。",
   rest: "日常一幕：什么都不发生，歇一口气。",
@@ -437,8 +451,24 @@ function tokenPos(player, node) {
   const side = player === "user" ? -17 : 17;
   const extra = mapState.organic ? (player === "user" ? -12 : 12) : 0;
   const drop = mapState.organic ? 64 : 0;
-  return [PX(node.x) + 44 + side + extra, PY(node.y) + 44 + drop];
+  const shift = mapState.anchorShift || 0;      // 城市图 = 0（锚点就是节点坐标）
+  return [PX(node.x) + shift + side + extra, PY(node.y) + shift + drop];
 }
+/* 本回合的出发格标记：紫色虚线圈 + 中心点。
+   圈比棋子（54px）大一圈，所以它是"圈住棋子"而不是贴在棋子脸上；白描边垫底，
+   跨过棋子/插图/深色地块时都读得清。金色粗线画的是"这个选择会走到哪"，
+   紫色只负责回答"这一程是从哪出发的"。 */
+function turnStartMark(node) {
+  if (!node) return "";
+  const shift = mapState.anchorShift || 0;
+  const x = (PX(node.x) + shift).toFixed(1), y = (PY(node.y) + shift).toFixed(1);
+  return `<g class="turn-start">
+    <circle cx="${x}" cy="${y}" r="32" fill="none" stroke="#fff" stroke-width="6" opacity="0.85"/>
+    <circle class="ts-ring" cx="${x}" cy="${y}" r="32" fill="none"
+      style="stroke:var(--start)" stroke-width="3.2" stroke-dasharray="8 8"/>
+    <circle cx="${x}" cy="${y}" r="4.5" style="fill:var(--start)" stroke="#fff" stroke-width="2"/></g>`;
+}
+
 function animateMove(ev) {
   const game = state.game;
   if (!game || !game.cells || !ev.path || ev.path.length < 2) return;
@@ -451,7 +481,9 @@ function animateMove(ev) {
   const offset = (player === "user" ? -17 : 17) + (mapState.organic ? (player === "user" ? -12 : 12) : 0);
   const drop = mapState.organic ? 64 : 0;   // 随机图里棋子比圆圈低一点，别挡住格子
   // 路径画成一条折线，棋子沿线滑行；顺带在每格节点上点一个点，看清经过了几格
-  const pts = nodes.map(n => [PX(n.x) + 44, PY(n.y) + 44]);
+  // （城市图的节点坐标就是路面坐标——金线/棋子/路面必须同一套坐标，见 mapState.anchorShift）
+  const shift = mapState.anchorShift || 0;
+  const pts = nodes.map(n => [PX(n.x) + shift, PY(n.y) + shift]);
   const layer = boardWrap.querySelector("#move-svg");
   const d = smoothPath(pts, false);
   const color = player === "user" ? "#4a86c8" : "#d95a72";
@@ -459,6 +491,7 @@ function animateMove(ev) {
     layer.style.transition = "none";
     layer.style.opacity = "1";
     layer.innerHTML = `
+      ${turnStartMark(nodes[0])}
       <path d="${d}" fill="none" stroke="#fff" stroke-width="12" stroke-linecap="round"
         stroke-linejoin="round" opacity="0.9"/>
       <path id="move-trace" d="${d}" fill="none" stroke="${color}" stroke-width="6"
@@ -824,9 +857,6 @@ function renderMonopoly(game, demo) {
   const svg = $("#edges-svg");
   svg.setAttribute("width", bounds.w);
   svg.setAttribute("height", bounds.h);
-  const cx = (c) => PX(c.x) + cell / 2;
-  const cy = (c) => PY(c.y) + cell / 2;
-  const layers = [];
   // 存档里是 map_kind/main_path，演示棋盘里是 mapKind/mainPath，两种键名都认
   const kindKey = game.mapKind || game.map_kind;
   const mainPath = game.main_path || game.mainPath || state.mainPath || null;
@@ -835,6 +865,15 @@ function renderMonopoly(game, demo) {
   const city = kindKey === "city" && !!decor;
   // 随机地图用"圆圈 + 直线"的路线图形态：圆圈正落在节点上，线从圆里穿过
   mapState.organic = !city;
+  /* 格子锚点相对节点坐标的偏移。
+     城市图的路网（decor.roads）是**按节点坐标**画的线段，所以格子、棋子、金圈也必须钉在
+     节点坐标上，否则金圈会离路面上那根金线整整 (格宽/2, 格宽/2)（实测 62px），看着就是
+     "圈标在了别的格子上"。随机图没有路网、边是按格子坐标画的，就保持原来的 +格宽/2。 */
+  mapState.anchorShift = city ? 0 : cell / 2;
+  const shift = mapState.anchorShift;
+  const cx = (c) => PX(c.x) + shift;
+  const cy = (c) => PY(c.y) + shift;
+  const layers = [];
   const canvasEl = $("#map-canvas");
   if (canvasEl) canvasEl.classList.toggle("organic", mapState.organic);
   const ring = (mainPath || []).slice();
@@ -914,7 +953,7 @@ function renderMonopoly(game, demo) {
         stroke-width="${ROAD_STYLE[r.role].sw}" stroke-linejoin="round"/>`);
     }
     for (const r of roadList) {
-      layers.push(`<path d="${r.d}" fill="none" stroke="${ROAD_STYLE[r.role].surface}"
+      layers.push(`<path data-road="${r.role}" d="${r.d}" fill="none" stroke="${ROAD_STYLE[r.role].surface}"
         stroke-width="${ROAD_STYLE[r.role].pw}" stroke-linejoin="round"/>`);
     }
     for (const r of roadList.filter(x => x.role === "ring")) {
@@ -974,8 +1013,15 @@ function renderMonopoly(game, demo) {
     ? game.pending.player : (game.winner ? null : game.turn);
   const walkNode = game.walk && game.walk.path && game.walk.path.length
     ? game.walk.path[game.walk.path.length - 1] : null;
-  const cameFrom = game.walk && game.walk.path && game.walk.path.length >= 2
+  let cameFrom = game.walk && game.walk.path && game.walk.path.length >= 2
     ? game.walk.path[game.walk.path.length - 2] : null;
+  // 一回合的第一步没有"走过来的路径"，但引擎会用**上回合最后一步**堵住原路折返；
+  // 网页不跟着堵的话，会画出一个引擎根本不接受的回头箭头
+  if (cameFrom === null && walkNode !== null && actor && game.positions
+      && walkNode === game.positions[actor]) {
+    const lastStep = (game.last_step || game.lastStep || {})[actor];
+    if (lastStep && lastStep[1] === walkNode) cameFrom = lastStep[0];
+  }
   const fromNode = walkNode !== null ? walkNode : (actor && game.positions ? game.positions[actor] : null);
   // 一条图边的路网几何（服务端预计算、含折角），按 a→b 方向定向。
   // 之前按"最近点索引"从折线现截，节点靠近别的路时会截出错段——长边斜穿地图就是它
@@ -1010,31 +1056,42 @@ function renderMonopoly(game, demo) {
       const nd = game.cells[other];
       if (!nd) continue;
       if (choosing) {
-        // 沿这个方向一直走：自动直行（只有一条前进路时继续），直到遇到新岔路（≥2 前进方向）
-        // 或死路（0 条）—— 高亮出"这个选择会把你带到哪"，而不是只画第一格
+        // 沿这个方向一直走：自动直行（只有一条前进路时继续），直到遇到新岔路（≥2 前进方向）、
+        // 死路（0 条）、**或者剩余步数走完**——引擎就是这么一步步推进的，高亮的终点必须
+        // 同时满足这两条，否则会把"岔路后的第一格"错当成落点（一直是这个老毛病）
+        const rawBudget = game.pending ? game.pending.steps_left : null;
+        const budget = Number.isFinite(Number(rawBudget)) ? Number(rawBudget) : 24;
         const cellsAhead = [fromNode, other];
         let cur = other, came = fromNode;
         for (let guard = 0; guard < 24; guard++) {
+          if (cellsAhead.length - 1 >= budget) break;    // 剩余步数走完了，引擎到此结算
           const fwd = forwardOf(cur, came).filter(n => !cellsAhead.includes(n));
           if (fwd.length !== 1) break;    // 新岔路 / 死路 / 环回：到此为止
           came = cur; cur = fwd[0];
           cellsAhead.push(cur);
         }
-        // 逐段取每条图边的真实几何拼出完整高亮线（不再有跨图斜线）
+        // 逐段取每条图边的真实几何拼出完整高亮线（几何与画路同源，不会斜穿街区）
         let pts = [];
         for (let i = 0; i + 1 < cellsAhead.length; i++) {
           const seg = edgePts(cellsAhead[i], cellsAhead[i + 1]);
           pts.push(...(i ? seg.slice(1) : seg));
         }
-        layers.push(`<path d="${smoothPath(pts, false)}" fill="none" stroke="#f0b429"
+        if (pts.length < 2) pts = [[cx(here), cy(here)], [cx(nd), cy(nd)]];
+        // data-route 只为了让人/测试能把这根金线和它的选点圈对上（同一选项一对）
+        layers.push(`<path data-route="${other}" d="${smoothPath(pts, false)}" fill="none" stroke="#f0b429"
           stroke-width="10" opacity="0.95" stroke-linecap="round" stroke-linejoin="round"/>`);
-        // 落点标记：呼吸圈套在**选项格**（即你选的第一步）的锚点上，按下即选；
-        // 延伸的金线展示这个选择最终会走到哪
+        // 落点标记：金色呼吸圈套在**这条路的终点**上（走完步数、或走到下一个岔路为止）；
+        // 紧邻的那一格只画个小点，说明"往这个方向迈第一步"。
+        // 注意 data-node 必须仍是**紧邻的选项格**——引擎的 decide 只接受下一步，延伸段由引擎自动直行。
+        const lastCell = game.cells[cellsAhead[cellsAhead.length - 1]];
+        const lx = cx(lastCell).toFixed(1), ly = cy(lastCell).toFixed(1);
         hintSvg += `<g class="route-pick" data-node="${other}">
-          <circle class="pick-ring" cx="${cx(nd).toFixed(1)}" cy="${cy(nd).toFixed(1)}"
-            r="22" fill="rgba(240,180,41,0.18)" stroke="#f0b429" stroke-width="3.5"/>
+          <circle cx="${lx}" cy="${ly}" r="36" fill="transparent"/>
+          <circle class="pick-ring" cx="${lx}" cy="${ly}"
+            r="24" fill="rgba(240,180,41,0.18)" stroke="#f0b429" stroke-width="3.5"/>
+          <circle class="pick-dot" cx="${lx}" cy="${ly}" r="7" fill="#f0b429" stroke="#fff" stroke-width="2"/>
           <circle cx="${cx(nd).toFixed(1)}" cy="${cy(nd).toFixed(1)}"
-            r="7" fill="#f0b429" stroke="#fff" stroke-width="2"/></g>`;
+            r="8" fill="#fff" stroke="#f0b429" stroke-width="3"/></g>`;
       } else {
         // 平时的小箭头：放在这条边的路网几何中点、指向行进方向
         const seg = edgePts(fromNode, other);
@@ -1045,6 +1102,10 @@ function renderMonopoly(game, demo) {
       }
     }
   }
+  /* 本回合的出发格：只在"这一回合还在走"的时候显示——game.walk 还在（含岔路待选），
+     或者移动动画正在放（走完格子后服务端就把 walk 清了，动画期间由动画图层自己画这个圈）。 */
+  const walking = !!(game.walk && game.walk.path && game.walk.path.length);
+  if (walking && game.cells[game.walk.path[0]]) hintSvg += turnStartMark(game.cells[game.walk.path[0]]);
   svg.innerHTML = layers.join("") + hot.join("");
 
   /* 行进方向箭头：主环折线必须先按"行进方向"定向——折线的点序是画图定的，
@@ -1093,10 +1154,10 @@ function renderMonopoly(game, demo) {
     const badge = c.type !== "property" && c.type !== "start" ? " badge" : "";
     const start = c.type === "start" ? " start" : "";
     // 钉尖落点（锚点）压在路线上的节点处，图钉本体向上展开，不遮路线
-    frag.push(`<span class="pdot${start}" style="--ring:${ring};left:${wx + 44}px;top:${wy + 44}px"></span>`);
+    frag.push(`<span class="pdot${start}" style="--ring:${ring};left:${wx + shift}px;top:${wy + shift}px"></span>`);
     frag.push(`<div class="cell${badge}${start} ${c.owner ? "owned" : ""} ${c.mortgaged ? "mortgaged" : ""}"
-      data-id="${c.id}" data-wx="${wx + 44}" data-wy="${wy + 44}"
-      style="--ring:${ring};left:${wx + 44}px;top:${wy + 44}px">${cellHTML(c)}</div>`);
+      data-id="${c.id}" data-wx="${wx + shift}" data-wy="${wy + shift}"
+      style="--ring:${ring};left:${wx + shift}px;top:${wy + shift}px">${cellHTML(c)}</div>`);
   });
   const tokenImgs = { user: "/art/avatar_user.svg", sakura: "/art/avatar_sakura.png" };
   const actorNow = game.pending && game.pending.type === "route"
@@ -1106,9 +1167,9 @@ function renderMonopoly(game, demo) {
     // 该棋子的移动动画进行中：用动画的当前坐标摆放（渲染不把棋子拽回终点——抽动的根因）
     const anim = state.moveAnim && state.moveAnim.player === p ? state.moveAnim : null;
     const px = anim ? anim.current[0]
-      : PX(nd.x) + 44 + (p === "user" ? -17 : 17) + (mapState.organic ? (p === "user" ? -12 : 12) : 0);
+      : PX(nd.x) + shift + (p === "user" ? -17 : 17) + (mapState.organic ? (p === "user" ? -12 : 12) : 0);
     const py = anim ? anim.current[1]
-      : PY(nd.y) + 44 + (mapState.organic ? 64 : 0);
+      : PY(nd.y) + shift + (mapState.organic ? 64 : 0);
     frag.push(`<img class="token ${p} ${actorNow === p ? "active-turn" : ""}" data-player="${p}"
       src="${tokenImgs[p]}" style="left:${px}px;top:${py}px">`);
   }
@@ -1134,7 +1195,7 @@ function renderMonopoly(game, demo) {
   if (state.version !== mapState.lastVersion) {
     mapState.lastVersion = state.version;
     const a = game.cells[game.positions.user], b = game.cells[game.positions.sakura];
-    mapState.pendingCenter = { x: (PX(a.x) + PX(b.x)) / 2 + cell / 2, y: (PY(a.y) + PY(b.y)) / 2 + cell / 2 };
+    mapState.pendingCenter = { x: (PX(a.x) + PX(b.x)) / 2 + shift, y: (PY(a.y) + PY(b.y)) / 2 + shift };
   }
   renderMonopolyInfo(game);
   renderDiceCard(game);
@@ -1244,7 +1305,9 @@ function applyTransform() {
     const sy = parseFloat(el.dataset.wy) * mapState.zoom + mapState.oy;
     const d = Math.min(1, Math.hypot(sx - cx, sy - cy) / maxD);
     const s = 1.16 - d * 0.40;          // 中心 1.16 → 边缘 0.76
-    el.style.transform = `translate(-50%, calc(-100% ${mapState.organic ? "+ 31px" : "- 22px"})) scale(${s.toFixed(3)})`;
+    // 城市图：锚点就在路面节点上，钉尖只抬 8px（正好戳在路面上、又贴着自己的锚点圆点）；
+    // 随机图：锚点是圆圈中心，图钉整体再压 31px 下去，别挡住圆圈
+    el.style.transform = `translate(-50%, calc(-100% ${mapState.organic ? "+ 31px" : "- 8px"})) scale(${s.toFixed(3)})`;
     el.style.zIndex = String(3 + Math.round((1 - d) * 4));
   }
   // 棋子头像：地图缩小时反向放大，保证任何缩放级别下都看得见双方在哪
@@ -1478,9 +1541,11 @@ function openHelp() {
     <h2>玩法说明</h2>
     <h4>大富翁 · 第二横滨市</h4>
     <p>掷骰后沿街道走相应格数。城市由外环干道、两条主动脉和七条支街组成，<b>岔路会标出拐出去的方向</b>，遇到岔路由你选择走法。经过或落在起点领工资。
+    地图上的标记：<b style="color:#f0b429">金色粗线</b> = 这个选择会走到的路线（<b style="color:#f0b429">金色呼吸圈</b> = 这一程的落点，点它即选），
+    <b style="color:var(--start)">紫色虚线圈</b> = 本回合的出发格。
     地产分四个街区（<b style="color:#4a8bc9">学园区</b> / <b style="color:#d95a72">街市</b> / <b style="color:#3f9e83">住宅区</b> / <b style="color:#4a5470">禁忌区</b>），
-    同街区全持且无抵押时租金翻倍。走到无主地产可以买；走回自己的地产可以升级（租金×2）、抵押（回收半价）、赎回（六成价）或卖掉（三分之一）。
-    付不起账单会强制抵押，全抵押还不够就破产，资产移交债主。回合上限后按现金判胜负。</p>
+    持有同一街区六成的地产（且都没抵押）时租金翻倍。走到无主地产可以买；走回自己的地产可以升级（租金×2）、抵押（回收半价）、赎回（六成价）或卖掉（三分之一）。
+    付不起账单会强制抵押，全抵押还不够就破产，资产移交债主。回合上限后按<b>总资产</b>判定：现金 + 地产现价的六成。</p>
     <h4>格子图例</h4>
     <div class="legend-grid">${legend}</div>
     <h4>NAVI 事件卡图鉴（共 ${state.cards.length} 张）</h4>

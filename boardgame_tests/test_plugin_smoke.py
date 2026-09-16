@@ -10,10 +10,11 @@ import urllib.request
 
 from pathlib import Path as _Path
 
-ROOT = _Path(__file__).resolve().parents[1]   # 仓库根目录
+ROOT = _Path(__file__).resolve().parents[1]      # 仓库根目录
 sys.path.insert(0, str(ROOT / "sakura_boardgame"))
 
 import plugin as plugin_module
+import engine as engine_mod
 from engine import GameError
 
 
@@ -64,13 +65,39 @@ class FakeContext:
                 self_ref.settings_actions = actions or {}
 
         class Character:
+            MINI_CARD = ("夜乃桜是个冷静、克制的少女，凡事会先掂量代价再开口；她好胜、不服输，"
+                         "输掉的事会记很久；但对你很温柔体贴，看见猫会停下脚步。")
+
             def current(self):
-                return {"id": "sakura-1", "systemPrompt": "..."}
+                return {"id": "sakura-1", "systemPrompt": self.MINI_CARD}
 
         class Mobile:
             def begin(self, plugin_id, character_id, text, artifact=None):
                 self_ref.mobile_calls.append({"plugin_id": plugin_id, "character_id": character_id, "text": text})
                 return {"jobId": "job-1"}
+
+        class ComposerTools:
+            """模拟宿主的「+」菜单扩展服务：捕获注册，支持手动触发回调。"""
+
+            def __init__(self):
+                self_ref.composer_tools = {}
+
+            def register(self, plugin_id, descriptor, handle):
+                self_ref.composer_tools[descriptor["toolId"]] = {
+                    "plugin_id": plugin_id, "descriptor": dict(descriptor), "handle": handle}
+
+        class Callbacks:
+            """模拟宿主的回调注册：句柄是字符串，调用走 invoke_callback（与真实宿主一致）。"""
+
+            def __init__(self):
+                self.count = 0
+                self.bindings: dict[str, tuple] = {}
+
+            def _register_callback(self, shape, callback):
+                self.count += 1
+                handle = f"cb_{self.count:032x}"
+                self.bindings[handle] = (shape, callback)
+                return handle, (lambda: None)
 
         self._services = {
             "sakura.host.logging": self._logger,
@@ -79,10 +106,24 @@ class FakeContext:
             "sakura.host.settings": Settings(),
             "sakura.host.character": Character(),
             "sakura.host.mobile": Mobile(),
+            "sakura.host.ui.composer-tools-v0": ComposerTools(),
+            "_callbacks": Callbacks(),
         }
 
     def get(self, key):
+        if key == "_callbacks":
+            return self._services["_callbacks"]
         return self._services.get(key)
+
+    def _register_callback(self, shape, callback):
+        """真实宿主（SDK Context）有这个方法，插件注册「+」菜单回调要用它。"""
+        return self._services["_callbacks"]._register_callback(shape, callback)
+
+    def invoke_callback(self, handle, shape, args):
+        """模拟宿主按句柄回调插件函数。"""
+        shape_expected, callback = self._services["_callbacks"].bindings[handle]
+        assert shape_expected == shape, (shape_expected, shape)
+        return callback(*args)
 
     def data_path(self, relative):
         return self.root / relative
@@ -126,15 +167,23 @@ def main() -> None:
         assert len(ctx.context_contributions) == 1
         assert "openBoard" in ctx.settings_actions
         assert ctx.effects, "应登记服务器清理 effect"
-
         descriptor, builder = ctx.context_contributions[0]
         # 没开局时也要注入内容：必须把棋盘地址放进上下文，
         # 否则"模型不调用工具"时她拿不到地址，只能瞎说"棋盘应该已经打开了"
+        # （放在「+」菜单测试之前——那条会真的开一局，冷启动文案就看不到了）
         cold = builder({})
         assert cold, "没对局时上下文不该是空的"
         cold_text = json.dumps(cold, ensure_ascii=False)
         assert "http://127.0.0.1:" in cold_text, cold_text[:200]
         assert "boardgame_start" in cold_text
+        # 「+」菜单：注册了「打开棋盘」（触发行为放到最后的独立实例里测，
+        # 因为点击会真的开一局，会污染本实例"未开局"的前置状态）
+        assert "open_board" in ctx.composer_tools, ctx.composer_tools
+        reg = ctx.composer_tools["open_board"]
+        assert reg["plugin_id"] == "local.sakura.boardgame"
+        assert reg["descriptor"]["label"] == "打开棋盘"
+        assert reg["descriptor"]["icon"] in {"camera", "folder", "globe", "link",
+                                            "note", "settings", "sparkles", "terminal"}
 
         # ---- 未开局 ----
         state0 = ctx.tools["boardgame_state"]({})
@@ -223,23 +272,67 @@ def main() -> None:
             else:
                 break
             assert status == 200 and res["ok"] is True, res
+            # 待决策时：工具指令只进 hint，status（会写进对局记录）里不许有
+            if res.get("pending") and res["pending"].get("type") != "route":
+                assert "boardgame" not in res["status"], res["status"]
+                assert "boardgame_decide" in res.get("hint", ""), res
             steps += 1
             assert steps < 200, "网页操作无法推进对局"
         assert steps > 0, "至少应能通过网页推进一次"
 
-        # 掷骰产生了带路径的移动事件（供页面播棋子移动动画）
+        # 最后一次移动事件带路径（供页面播棋子移动动画）；
+        # dice 仅在"掷骰产生移动"时存在——岔路选向后的继续行走没有骰子但有路径
         payload = json.loads(http_get(base + "state")[1])
         assert payload["lastEvent"], payload["lastEvent"]
         event = payload["lastEvent"]
-        assert event["kind"] == "move" and 1 <= event["dice"] <= 12, event
-        assert event["path"] and event["path"][0] == event["path"][0], event
-        assert len(event["path"]) >= 1
+        assert event["kind"] == "move", event
+        assert event["path"] and len(event["path"]) >= 1, event
+        if "dice" in event:
+            assert 1 <= event["dice"] <= 12, event
         # 地产数量与租金收益统计
         stats = payload["stats"]
         assert set(stats) == {"user", "sakura"}, stats
         for side in ("user", "sakura"):
             assert "properties" in stats[side] and "income" in stats[side], stats
             assert stats[side]["properties"] >= 0 and stats[side]["income"] >= 0
+
+        # ---- 对局记录里不许出现"给模型的工具指令" ----
+        # 玩家会逐条读对局记录，工具调用说明是给模型看的，混进来就是脏数据
+        for line in payload["log"]:
+            assert "boardgame_" not in line, line
+            assert "调用" not in line, line
+            assert "action=" not in line, line
+
+        # ---- 打法性格：从角色卡推出，并且真的改变她的决策 ----
+        service = ctx.tools["boardgame_state"].__self__          # 绑定的处理方法 → 拿到服务对象
+        assert service is not None
+        traits = service._persona["traits"]
+        assert traits["caution"] > 0.2, traits                    # 假卡里写了"冷静/克制/掂量"
+        assert traits["ambition"] > 0.2, traits                   # "好胜/不服输"
+        assert traits["kindness"] > 0.2, traits                   # "温柔/体贴"
+        policy = service._persona["policy"]
+        assert policy["reserve"] >= 120, policy
+        assert "打法性格" in json.dumps(builder({}), ensure_ascii=False)
+
+        # 留底金：现金刚好够买、但不够"价格 + 底金"时她会忍住；够了才买
+        game = engine_mod.MonopolyGame(size=12, dice_sides=6, seed=3)
+        prop = next(c for c in game.cells if c["type"] == "property")
+        price = game.current_price(prop)
+        reserve = int(policy["reserve"])
+        game.pending = {"player": "sakura", "type": "land", "cell": prop["id"], "options": ["buy", "skip"]}
+        game.cash["sakura"] = price + reserve - 10
+        assert service._pick_pending_action(game) == "skip", (price, reserve)
+        game.cash["sakura"] = price + reserve + 50
+        assert service._pick_pending_action(game) == "buy"
+
+        # 设置里换性格：进取的底金应当明显低于稳健
+        ctx.config.update({"play_style": "bold"})
+        bold = service._build_persona()["policy"]["reserve"]
+        ctx.config.update({"play_style": "steady"})
+        steady = service._build_persona()["policy"]["reserve"]
+        assert bold < steady, (bold, steady)
+        ctx.config.update({"play_style": "card"})
+        assert service._build_persona()["policy"]["reserve"] == reserve
 
         # ---- 请夜乃樱行动（含 mobile 通道）----
         status, res = http_post(base + "api/action", {"action": "act_sakura"})
@@ -340,12 +433,23 @@ def main() -> None:
         plugin_module.BoardgamePlugin().setup(ctx5)
         assert ctx5.tools["boardgame_state"]({})["active"] is False
 
+        # ---- 「+」菜单触发：点击「打开棋盘」应自动开一局并返回地址 ----
+        ctx6 = FakeContext(pathlib.Path(tmp) / "data6")
+        plugin_module.BoardgamePlugin().setup(ctx6)
+        reg6 = ctx6.composer_tools["open_board"]
+        result6 = ctx6.invoke_callback(reg6["handle"], "ui.composer_tool.invoke", {"source": "composer"})
+        assert result6["status"] == "completed" and "http://127.0.0.1:" in result6["message"], result6
+        assert ctx6.tools["boardgame_state"]({})["active"] is True, "点击后应已自动开一局"
+
         # ---- 服务器随插件 scope 停止 ----
-        all_ctx = [ctx, ctx2, ctx3, ctx4, ctx5]
+        # 先把各实例的地址记下来（teardown 之后再调工具会把服务器按需重启——这是特性，
+        # 闲时自动关闭后重新访问 board_url 会自动拉起来）
+        urls = [c.tools["boardgame_state"]({})["board_url"] for c in
+                [ctx, ctx2, ctx3, ctx4, ctx5, ctx6]]
+        all_ctx = [ctx, ctx2, ctx3, ctx4, ctx5, ctx6]
         for c in all_ctx:
             c.teardown()
-        for c in all_ctx:
-            url = c.tools["boardgame_state"]({})["board_url"]
+        for url in urls:
             assert http_get(url, expect_error=True)[0] is None, "服务器应在 teardown 后关闭"
 
     print("PLUGIN SMOKE TEST PASSED")

@@ -222,7 +222,8 @@ def _build_game(cells, edges, positions=None, turn="user", dice=1, cash=None):
     game.seed = 1
     game._rolls = 0
     game._card_draws = 0
-    game.cash = dict(cash or {"user": 1000, "sakura": 1000})
+    start = engine.MONOPOLY_START_CASH
+    game.cash = dict(cash or {"user": start, "sakura": start})
     game.positions = dict(positions or {"user": 0, "sakura": 0})
     game.skip_pending = {"user": False, "sakura": False}
     game.flags = {p: {"salary_next": False, "rent_free": False, "dice_bonus": 0} for p in ("user", "sakura")}
@@ -232,6 +233,7 @@ def _build_game(cells, edges, positions=None, turn="user", dice=1, cash=None):
     game.max_rounds = 100
     game.pending = None
     game._walk = None
+    game.last_step = {"user": None, "sakura": None}
     game.cells = cells
     game.edges = edges
     game._neighbors = game._build_neighbors()
@@ -310,7 +312,7 @@ def test_monopoly_salary_on_start_landing() -> None:
     result = game.roll("user")
     assert result["pending"]["type"] == "route" and set(result["pending"]["options"]) == {0, 2}
     result = game.decide("user", "0")
-    assert game.cash["user"] == 1200, game.cash
+    assert game.cash["user"] == engine.MONOPOLY_START_CASH + engine.MONOPOLY_PASS_START, game.cash
     assert any("领工资" in entry for entry in result["story"])
 
     # 工资翻倍旗标
@@ -318,7 +320,7 @@ def test_monopoly_salary_on_start_landing() -> None:
     game2.flags["user"]["salary_next"] = True
     game2.roll("user")
     game2.decide("user", "0")
-    assert game2.cash["user"] == 1400, game2.cash
+    assert game2.cash["user"] == engine.MONOPOLY_START_CASH + engine.MONOPOLY_PASS_START * 2, game2.cash
     assert game2.flags["user"]["salary_next"] is False
 
 
@@ -326,7 +328,8 @@ def test_monopoly_salary_on_start_landing() -> None:
 
 def test_monopoly_property_management() -> None:
     game = MonopolyGame(size=12, dice_sides=6, seed=1)
-    prop = next(c for c in game.cells if c["type"] == "property" and c["price"] == 100)
+    # 用档位挑最便宜的一档，别写死具体金额（地价单位 engine.MONOPOLY_PRICE_UNIT 可调）
+    prop = next(c for c in game.cells if c["type"] == "property" and c["tier"] == 1)
     prop_id = prop["id"]
     # 直接落在空地 → 买
     game.positions["user"] = prop_id
@@ -336,40 +339,41 @@ def test_monopoly_property_management() -> None:
     story: list[str] = []
     game._resolve_landing("user", prop_id, True, story)
     assert game.pending and game.pending["options"] == ["buy", "skip"]
+    price = game.current_price(prop)          # 全程 move_count < 8，还没触发涨价
     game.decide("user", "buy")
-    assert prop["owner"] == "user" and game.cash["user"] == 900
+    assert prop["owner"] == "user" and game.cash["user"] == engine.MONOPOLY_START_CASH - price
     # 回到自己地 → 菜单
     game.turn = "user"
     game.pending = None
     game._resolve_landing("user", prop_id, True, story)
     assert game.pending and "upgrade" in game.pending["options"]
     game.decide("user", "upgrade")
-    assert prop["level"] == 1 and game.cash["user"] == 850
+    assert prop["level"] == 1 and game.cash["user"] == engine.MONOPOLY_START_CASH - price - price // 2
     # 满级后：抵押 / 卖 / 跳过
     game.turn = "user"
     game.pending = None
     game._resolve_landing("user", prop_id, True, story)
     assert game.pending["options"] == ["mortgage", "sell", "skip"]
     game.decide("user", "mortgage")
-    assert prop["mortgaged"] is True and game.cash["user"] == 900
+    assert prop["mortgaged"] is True and game.cash["user"] == engine.MONOPOLY_START_CASH - price
     # 抵押中免租
     game.turn = "sakura"
     game.pending = None
     outcome = game._resolve_landing("sakura", prop_id, True, story)
-    assert outcome["kind"] == "mortgaged" and game.cash["sakura"] == 1000
+    assert outcome["kind"] == "mortgaged" and game.cash["sakura"] == engine.MONOPOLY_START_CASH
     # 赎回
     game.turn = "user"
     game.pending = None
     game._resolve_landing("user", prop_id, True, story)
     assert game.pending["options"] == ["redeem", "sell", "skip"]
     game.decide("user", "redeem")
-    assert prop["mortgaged"] is False and game.cash["user"] == 840
+    assert prop["mortgaged"] is False and game.cash["user"] == engine.MONOPOLY_START_CASH - price - price * 3 // 5
     # 卖掉
     game.turn = "user"
     game.pending = None
     game._resolve_landing("user", prop_id, True, story)
     game.decide("user", "sell")
-    assert prop["owner"] is None and game.cash["user"] == 840 + 33
+    assert prop["owner"] is None and game.cash["user"] == engine.MONOPOLY_START_CASH - price - price * 3 // 5 + price // 3
 
 
 def test_monopoly_monopoly_multiplier_and_rent() -> None:
@@ -408,6 +412,68 @@ def test_monopoly_monopoly_multiplier_and_rent() -> None:
     assert game._has_monopoly("sakura", "gakuen") is False
 
 
+def test_monopoly_hold_share_rule() -> None:
+    """街区垄断改成"持有六成（至少 2 处）"：全持要求在一局里根本凑不齐（旧规则实测 0% 触发）。"""
+    game = MonopolyGame(size=12, dice_sides=6, seed=1)
+    game.cells = [
+        {"id": i, "x": i, "y": 0, "type": "property", "name": f"店{i}", "group": "shopping",
+         "tier": 2, "price": 200, "owner": None, "level": 0, "mortgaged": False}
+        for i in range(5)
+    ]
+    need = game._has_monopoly
+    for i in range(2):                      # 5 处里占 2 处（40%）不算
+        game.cells[i]["owner"] = "user"
+    assert need("user", "shopping") is False
+    game.cells[2]["owner"] = "user"         # 3/5 = 60% → 算垄断
+    assert need("user", "shopping") is True
+    assert game._rent(game.cells[0]) == 200  # 100 基础 ×2 垄断
+    game.cells[2]["mortgaged"] = True        # 抵押掉一块就掉回 40%
+    assert need("user", "shopping") is False
+    game.cells[2]["mortgaged"] = False
+    # 只有 1 处的街区永远不可能垄断
+    game.cells.append({"id": 9, "x": 9, "y": 0, "type": "property", "name": "独苗",
+                       "group": "taboo", "tier": 1, "price": 100, "owner": "user",
+                       "level": 0, "mortgaged": False})
+    assert need("user", "taboo") is False
+
+
+def test_settle_by_net_worth() -> None:
+    """回合上限按总资产判定：地产多的一方不该因为花了现金而输（旧规则只看现金）。"""
+    game = MonopolyGame(size=12, dice_sides=6, seed=1)
+    props = [c for c in game.cells if c["type"] == "property"][:3]
+    for c in props:
+        c["owner"] = "user"                 # 用户：现金少但有三处地（现值 ×0.6 计入）
+    held = sum(game.current_price(c) for c in props) * engine.MONOPOLY_PROPERTY_SCORE
+    game.cash = {"user": 100, "sakura": int(100 + held) - 1}    # 对手只少 1 块
+    game.max_rounds = 0
+    story: list[str] = []
+    game._maybe_settle(story)
+    assert game.winner == "user", story
+    assert "总资产" in story[-1], story[-1]
+    # 抵押过的地产已经拿过现钱，不再重复计入
+    for c in props:
+        c["mortgaged"] = True
+    game.winner = None
+    game._maybe_settle(story)
+    assert game.winner == "sakura", story        # 只剩 ¥100 现金
+    assert "现金" in story[-1]
+
+
+def test_forced_mortgage_uses_inflated_price() -> None:
+    """强制抵押按**现价**回收一半（以前用基础价，涨价后比主动抵押少拿三分之一）。"""
+    game = MonopolyGame(size=12, dice_sides=6, seed=1)
+    prop = next(c for c in game.cells if c["type"] == "property")
+    prop["owner"] = "user"
+    game.cash["user"] = 0
+    game.move_count = 8 * 20                                  # 让涨价到顶（1.5 倍）
+    price = game.current_price(prop)
+    assert price > prop["price"], (price, prop["price"])
+    story: list[str] = []
+    game._pay("user", 10, None, story)
+    assert game.cash["user"] >= 10
+    assert f"回收 ¥{price // 2}" in " ".join(story), story
+
+
 def test_monopoly_forced_mortgage_and_bankruptcy() -> None:
     game = MonopolyGame(size=12, dice_sides=6, seed=1)
     cells = game.cells
@@ -425,7 +491,7 @@ def test_monopoly_forced_mortgage_and_bankruptcy() -> None:
     assert payment["bankrupt"] is False
     assert all(c["mortgaged"] for c in user_props)
     assert game.cash["user"] == 10
-    assert game.cash["sakura"] == 1000 + 300
+    assert game.cash["sakura"] == engine.MONOPOLY_START_CASH + 300
     assert any("抵押" in entry for entry in story)
     # sakura 已无产可抵 → 破产，资产过户给 user
     game.cash["sakura"] = 10
@@ -447,7 +513,7 @@ def test_monopoly_round_limit_and_price_inflation() -> None:
     # 回合上限结算
     game2 = MonopolyGame(size=12, dice_sides=6, seed=1)
     game2.max_rounds = 1
-    game2.cash["sakura"] = 2000
+    game2.cash["sakura"] = engine.MONOPOLY_START_CASH * 2
     game2._dice_rng = _fake_dice(1)
     game2.roll("user")
     while game2._walk or game2.pending:
@@ -466,9 +532,12 @@ def test_monopoly_round_limit_and_price_inflation() -> None:
 def test_monopoly_special_cells() -> None:
     game = MonopolyGame(size=12, dice_sides=6, seed=9)
     # 找格子直接结算
-    for required, expect_cash in (("cat", 1000 - 50 + 150), ("monster", 1000 - 150), ("train", 1000 - 300)):
+    base = engine.MONOPOLY_START_CASH
+    for required, expect_cash in (("cat", base - engine.MONOPOLY_CAT_COST + engine.MONOPOLY_CAT_GAIN),
+                                  ("monster", base - engine.MONOPOLY_MONSTER_TOLL),
+                                  ("train", base - engine.MONOPOLY_TRAIN_TOLL)):
         cell = next(c for c in game.cells if c["type"] == required)
-        game.cash["user"] = 1000
+        game.cash["user"] = engine.MONOPOLY_START_CASH
         game.pending = None
         game._walk = None
         story = []
@@ -487,7 +556,7 @@ def test_monopoly_special_cells() -> None:
 
     # 全部事件卡文案都不含第二人称“你”（避免对夜乃樱用错人称）
     for index in range(len(EVENT_CARDS)):
-        game.cash.update({"user": 1000, "sakura": 1000})
+        game.cash.update({"user": engine.MONOPOLY_START_CASH, "sakura": engine.MONOPOLY_START_CASH})
         game.pending = None
         game._walk = None
         game._last_walk = None
@@ -750,6 +819,89 @@ def test_city_map_in_engine() -> None:
     assert restored.branches == game.branches
     assert restored.cells == game.cells
     assert restored._moves == game._moves        # 单向规则也要能从存档恢复
+
+
+def test_city_edge_geometry_follows_roads() -> None:
+    """城市图的每条边都要有一段"贴在路面上"的几何。
+
+    这段几何是网页画金色路线高亮的依据。旧做法把节点吸附到街道原始折点上，
+    截出来的段常常越过相邻格子（斜穿街区），闭合主环末点绕回时更会截下整圈。
+    """
+    try:
+        from . import city_map
+    except ImportError:
+        import city_map  # type: ignore[no-redef]
+
+    cells, edges, _, _ = city_map.build_city()
+    decor = city_map.decor()
+    geom = decor["edgeGeom"]
+
+    roads = []
+    for road in decor["roads"]:
+        pts = [(float(x), float(y)) for x, y in road["pts"]]
+        if road.get("closed") and pts[0] != pts[-1]:
+            pts = pts + [pts[0]]
+        roads.append(pts)
+
+    def dist_to_road(x: float, y: float) -> float:
+        return min(city_map._seg_dist(a[0], a[1], b[0], b[1], x, y)
+                   for line in roads for a, b in zip(line, line[1:]))
+
+    def length(pts) -> float:
+        return sum(math.dist(pts[i], pts[i + 1]) for i in range(len(pts) - 1))
+
+    for a, b in edges:
+        key = f"{min(a, b)}_{max(a, b)}"
+        assert key in geom, f"边 {key} 没有几何"
+        seg = geom[key]
+        assert len(seg) >= 2
+        ca = (cells[a]["x"], cells[a]["y"])
+        cb = (cells[b]["x"], cells[b]["y"])
+        # 端头必须正好落在两端的格子上（正反都认）
+        ends = min(math.dist(seg[0], ca) + math.dist(seg[-1], cb),
+                   math.dist(seg[0], cb) + math.dist(seg[-1], ca))
+        assert ends < 0.06, f"边 {key} 端头不在格子上（偏 {ends:.3f}）"
+        # 不能绕远：几何长度不该明显超过两点直线距离（拐弯圆弧允许一点余量）
+        straight = math.dist(ca, cb)
+        assert length(seg) <= straight * 1.35 + 0.05, f"边 {key} 绕路 {length(seg) / straight:.1f} 倍"
+        # 整段都要压在路面上（最远处不超过一格的三分之一），否则就是"斜穿街区"
+        worst = max(dist_to_road(x, y) for x, y in seg)
+        assert worst < 0.34, f"边 {key} 离路面最远 {worst:.2f} 格"
+
+
+def test_decide_returns_full_path_and_cross_turn_no_uturn() -> None:
+    """岔路选择走完剩余步数后路径完整；跨回合第一步不提供来路方向。"""
+    # --- 1) 走完剩余步数的岔路选择：path 必须覆盖到最终落点 ---
+    # T 形图：0-1-2，2 分叉到 3 和 4。掷 4：0→1→2 遇岔路（剩 2 步）。
+    cells = [_cell(i, i, 0) for i in range(5)]
+    game = _build_game(cells, [[0, 1], [1, 2], [2, 3], [2, 4]], dice=4)
+    result = game.roll("user")
+    assert result["pending"] and result["pending"]["type"] == "route"
+    result = game.decide("user", "3")     # 选 3：1 步到死路 3，剩 1 步原路弹回 2
+    # 路径必须覆盖**全程**（含弹回），且终点 = 引擎的权威位置
+    assert result["path"][:4] == [0, 1, 2, 3], result["path"]
+    assert result["path"][-1] == game.positions["user"] == 2, result["path"]
+    assert game._last_walk["path"] == result["path"]
+
+    # --- 2) 跨回合禁回头 ---
+    # 三角形 0-1-2-0。上回合从 0 走到 1（last_step = [0, 1]）。
+    # 这回合从 1 掷 1 点：邻格 0、2 中，0 是上一回合的来路，应被排除 → 自动走向 2。
+    tri_cells = [_cell(i, i % 2, i // 2) for i in range(3)]
+    tri = _build_game(tri_cells, [[0, 1], [1, 2], [2, 0]], dice=1)
+    tri.positions = {"user": 1, "sakura": 1}
+    tri.last_step["user"] = [0, 1]
+    tri._dice_rng = _fake_dice(1)
+    result = tri.roll("user")
+    assert result["path"] == [1, 2], result["path"]       # 没有退回 0
+    assert tri.positions["user"] == 2
+
+    # --- 3) last_step 随存档往返 ---
+    tri.start_node = 1                     # to_dict 需要的字段（手搭局补齐）
+    tri.map_kind = tri.map_kind if hasattr(tri, "map_kind") else "random"
+    tri.max_rounds = tri.max_rounds
+    data = tri.to_dict()
+    restored = restore_game(data)
+    assert restored.last_step == tri.last_step
 
 
 if __name__ == "__main__":

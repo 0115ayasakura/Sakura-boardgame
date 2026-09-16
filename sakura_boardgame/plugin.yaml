@@ -3,7 +3,7 @@ id: local.sakura.boardgame
 name: 棋盘游戏
 author: local
 description: 让夜乃樱和你玩双人回合制小游戏——大富翁（第二横滨市城市地图 / 随机地图两种）和五子棋，引擎管规则，角色管解说。
-version: 1.1.0
+version: 1.1.1
 entry: plugin:BoardgamePlugin
 enabled: false
 priority: 100
