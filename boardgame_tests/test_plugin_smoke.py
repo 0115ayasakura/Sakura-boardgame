@@ -32,10 +32,19 @@ class FakeConfig:
 
 
 class FakeContext:
-    def __init__(self, root: pathlib.Path) -> None:
+    MINI_CARD = ("夜乃桜是个冷静、克制的少女，凡事会先掂量代价再开口；她好胜、不服输，"
+                 "输掉的事会记很久；但对你很温柔体贴，看见猫会停下脚步。")
+    # 角色包（宿主的 resolve_resource 就指向这个目录）：用来测"名字/立绘跟随当前角色"
+    TEST_CHARACTER_ID = "suisen_test"
+    TEST_DISPLAY_NAME = "水仙"
+
+    def __init__(self, root: pathlib.Path, character_package: pathlib.Path | None = None,
+                 display_name: str | None = None) -> None:
         self.plugin_id = "local.sakura.boardgame"
         self.config = FakeConfig()
         self.root = root
+        self.character_package = character_package
+        self.display_name = display_name if display_name is not None else self.TEST_DISPLAY_NAME
         self.tools: dict[str, object] = {}
         self.context_contributions: list = []
         self.effects: list = []
@@ -65,11 +74,20 @@ class FakeContext:
                 self_ref.settings_actions = actions or {}
 
         class Character:
-            MINI_CARD = ("夜乃桜是个冷静、克制的少女，凡事会先掂量代价再开口；她好胜、不服输，"
-                         "输掉的事会记很久；但对你很温柔体贴，看见猫会停下脚步。")
+            """模拟宿主的角色服务：current() 给 id + 角色卡正文，resolve_resource() 给角色包里的文件。"""
 
             def current(self):
-                return {"id": "sakura-1", "systemPrompt": self.MINI_CARD}
+                return {"id": self_ref.TEST_CHARACTER_ID, "systemPrompt": self_ref.MINI_CARD}
+
+            def resolve_resource(self, character_id, relative_path):
+                if self_ref.character_package is None:
+                    raise ValueError("no package")
+                if str(character_id) != self_ref.TEST_CHARACTER_ID:
+                    raise ValueError("unknown character")
+                target = self_ref.character_package / relative_path
+                if not target.is_file():
+                    raise ValueError("missing resource")
+                return str(target)
 
         class Mobile:
             def begin(self, plugin_id, character_id, text, artifact=None):
@@ -339,7 +357,7 @@ def main() -> None:
         assert status == 200 and res["ok"] is True, res
         assert ctx.mobile_calls, "应通过 mobile 通道触发夜乃樱反应"
         call = ctx.mobile_calls[-1]
-        assert call["plugin_id"] == ctx.plugin_id and call["character_id"] == "sakura-1"
+        assert call["plugin_id"] == ctx.plugin_id and call["character_id"] == FakeContext.TEST_CHARACTER_ID
         assert "桌游播报" in call["text"]
 
         # 关掉自动反应后不再调用 mobile
@@ -417,6 +435,46 @@ def main() -> None:
         assert restored["edges"] == snapshot["edges"]
         assert restored["cells"] == snapshot["cells"]
         assert restored["map_version"] == engine_mod.MAP_VERSION
+
+        # ---- 对手角色自动跟随：名字与立绘从角色包里读 ----
+        pkg = pathlib.Path(tmp) / "char_pkg"
+        (pkg / "portraits").mkdir(parents=True, exist_ok=True)
+        (pkg / "character.json").write_text(json.dumps({
+            "id": FakeContext.TEST_CHARACTER_ID,
+            "display_name": FakeContext.TEST_DISPLAY_NAME,
+            "card": "card.md",
+            "portrait": {"default": "portraits/p7.png"},
+        }, ensure_ascii=False), encoding="utf-8")
+        (pkg / "card.md").write_text("冷静、克制的少女。", encoding="utf-8")
+        png = bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+                            "0000000a49444154789c6360000002000100ffff03000006000557bfabd40000000049454e44ae426082")
+        (pkg / "portraits" / "p7.png").write_bytes(png)
+
+        ctx_char = FakeContext(pathlib.Path(tmp) / "data_char", character_package=pkg)
+        plugin_module.BoardgamePlugin().setup(ctx_char)
+        char_base = ctx_char.tools["boardgame_state"]({})["board_url"]
+        char_state = json.loads(http_get(char_base + "state")[1])
+        assert char_state["opponent"]["name"] == FakeContext.TEST_DISPLAY_NAME, char_state["opponent"]
+        assert char_state["opponent"]["portrait"].startswith("/portrait"), char_state["opponent"]
+        # 立绘由 /portrait 端点吐出来（就是角色包里那张）
+        status, body = http_get(char_base + char_state["opponent"]["portrait"])
+        assert status == 200 and body == png, (status, body[:8])
+        # 引擎的显示名也跟着换：对局记录里应当出现新名字而不是"夜乃樱"
+        started = ctx_char.tools["boardgame_start"]({"game": "monopoly"})
+        assert FakeContext.TEST_DISPLAY_NAME in started["status"], started["status"]
+        assert engine_mod.PLAYER_LABEL["sakura"] == FakeContext.TEST_DISPLAY_NAME
+        rolled = ctx_char.tools["boardgame_roll"]({"player": "user"})
+        assert "夜乃樱" not in rolled["status"], rolled["status"]
+
+        # 没有角色包时退回默认（夜乃樱 + 插件自带立绘）
+        ctx_plain = FakeContext(pathlib.Path(tmp) / "data_char_plain")
+        plugin_module.BoardgamePlugin().setup(ctx_plain)
+        plain_state = json.loads(http_get(ctx_plain.tools["boardgame_state"]({})["board_url"] + "state")[1])
+        assert plain_state["opponent"]["name"] == "夜乃樱", plain_state["opponent"]
+        assert plain_state["opponent"]["portrait"] == "/art/avatar_sakura.png", plain_state["opponent"]
+        assert engine_mod.PLAYER_LABEL["sakura"] == "夜乃樱"
+        ctx_char.teardown()
+        ctx_plain.teardown()
 
         # ---- 旧版存档被安全忽略，并且**网页上要留一句话**（否则看着像"新版本没生效"）----
         data_dir = pathlib.Path(tmp) / "data_old"

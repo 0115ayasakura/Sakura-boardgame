@@ -18,7 +18,9 @@ Sakura 的 host 服务 `sakura.host.character.current()["systemPrompt"]` 就是�
 """
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
 from typing import Any
 
 # ---- 关键词表：改这里就能改她对性格措辞的敏感度 ----
@@ -154,3 +156,36 @@ def build(context: Any, preset: str = "card") -> dict[str, Any]:
     policy = policy_from(traits)
     source = "角色卡" if card.strip() else "默认（没读到角色卡）"
     return {"traits": traits, "policy": policy, "text": describe(traits, policy), "source": source}
+
+
+# ---- 当前角色的"身份"：显示名 + 立绘 ----
+def identity(context: Any) -> dict[str, str]:
+    """读当前角色的显示名与立绘文件路径，供网页跟随（换角色不用改插件）。
+
+    宿主的 `character.current()` 只给 `{id, systemPrompt}`，名字和立绘要靠角色包里的
+    `character.json`：先 `resolve_resource(id, "character.json")` 拿到清单，再按清单里的
+    `portrait.default`（相对包路径）解析出立绘文件。任何一步失败都返回空值，调用方用默认。
+    """
+    out = {"id": "", "name": "", "portrait": ""}
+    if context is None:
+        return out
+    try:
+        service = context.get("sakura.host.character")
+        if service is None:
+            return out
+        current = service.current() or {}
+        character_id = str(current.get("id") or "")
+        out["id"] = character_id
+        if not character_id:
+            return out
+        manifest = json.loads(Path(service.resolve_resource(character_id, "character.json"))
+                              .read_text(encoding="utf-8"))
+        out["name"] = str(manifest.get("display_name") or "").strip()
+        portrait = str((manifest.get("portrait") or {}).get("default") or "").strip()
+        if portrait:
+            path = Path(service.resolve_resource(character_id, portrait))
+            if path.is_file():
+                out["portrait"] = str(path)
+    except Exception:      # 宿主没给服务 / 角色包不完整 / 路径被拒 —— 一律退回默认，不让插件挂
+        return out
+    return out

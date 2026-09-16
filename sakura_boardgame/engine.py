@@ -21,6 +21,20 @@ PLAYERS = ("user", "sakura")
 
 PLAYER_LABEL = {"user": "玩家", "sakura": "夜乃樱"}
 PLAYER_MARK = {"user": "○", "sakura": "●"}
+DEFAULT_OPPONENT_LABEL = PLAYER_LABEL["sakura"]   # 读不到当前角色名时的兜底
+
+
+def set_opponent_label(name: str | None) -> str:
+    """把对手（座位 `sakura`）的显示名换成当前角色的名字。
+
+    座位键 `"sakura"` 是**数据键**——存档、工具参数（player="sakura"）、网页 API 都用它，不跟着改；
+    这里只换显示名。对局记录、结算文案、棋局摘要都读 `PLAYER_LABEL`，所以一处生效。
+    传空串/None 表示恢复默认。
+    """
+    label = (name or "").strip() or DEFAULT_OPPONENT_LABEL
+    PLAYER_LABEL["sakura"] = label
+    return label
+
 
 # ---- 大富翁 ----
 # 存档版本：**只要改过地图结构或经济数值就必须 +1**（旧存档会连带老数值一起被读回来，
@@ -304,7 +318,7 @@ class GomokuGame:
                     row.append(f" {mark}")
             lines.append("".join(row))
         last = f"（最后一手：{self.last_move[0] + 1},{self.last_move[1] + 1}）" if self.last_move else ""
-        return "\n".join(lines) + f"\n○=玩家 ●=夜乃樱 {last}"
+        return "\n".join(lines) + f"\n○={PLAYER_LABEL['user']} ●={PLAYER_LABEL['sakura']} {last}"
 
     def summary(self) -> str:
         return f"五子棋：第 {self.move_count} 手，轮到 {PLAYER_LABEL[self.turn]} 落子。"
@@ -1262,7 +1276,8 @@ class MonopolyGame:
         winner = "user" if user_score >= sakura_score else "sakura"
         self.winner = winner
         return (f"回合数达到上限（{self.max_rounds} 回合），按总资产判定："
-                f"玩家 {describe('user', user_score)} 对 夜乃樱 {describe('sakura', sakura_score)}，"
+                f"{PLAYER_LABEL['user']} {describe('user', user_score)} 对 "
+                f"{PLAYER_LABEL['sakura']} {describe('sakura', sakura_score)}，"
                 f"{PLAYER_LABEL[winner]}获胜！")
 
     def _maybe_settle(self, story: list[str]) -> None:
@@ -1303,7 +1318,7 @@ class MonopolyGame:
         walk_note = f"（{PLAYER_LABEL[self._walk['player']]}走格子中，剩 {self._walk['steps_left']} 步）" if self._walk else ""
         return (
             f"大富翁：第 {self.move_count}/{self.max_rounds} 回合，轮到 {PLAYER_LABEL[self.turn]}{walk_note}。"
-            f"玩家现金 ¥{self.cash['user']}，夜乃樱现金 ¥{self.cash['sakura']}。"
+            f"{PLAYER_LABEL['user']}现金 ¥{self.cash['user']}，{PLAYER_LABEL['sakura']}现金 ¥{self.cash['sakura']}。"
         )
 
     def to_dict(self) -> dict[str, Any]:

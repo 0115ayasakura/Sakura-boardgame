@@ -350,7 +350,7 @@
 <div id="app">
   <header>
     <h1>桜のボードゲーム室</h1>
-    <span class="sub">樱的桌游室</span>
+    <span class="sub" id="app-sub">樱的桌游室</span>
     <div id="tabs"></div>
   </header>
   <main>
@@ -389,10 +389,13 @@
 const state = { version: 0, game: null, cards: [], edges: null, stats: null, difficulty: 2, style: 45,
   log: [], lastEvent: null, tab: null, helpOpen: false, decor: null, mapTemplate: null,
   mainPath: null, branches: null, moves: null, organic: false, settingMapKind: null,
-  lastRoll: null, moveAnim: null };
+  lastRoll: null, moveAnim: null, opponent: null };
 const $ = (sel) => document.querySelector(sel);
 const boardWrap = $("#board-wrap");
+/* 对手的名字与头像默认是夜乃樱，但 /state 会下发当前角色（opponent），换角色自动跟随 */
 const NAMES = { user: "玩家", sakura: "夜乃樱" };
+const DEFAULT_OPPONENT = { name: "夜乃樱", portrait: "/art/avatar_sakura.png" };
+const opponent = () => state.opponent || DEFAULT_OPPONENT;
 const GAMES = { monopoly: "大富翁", gomoku: "五子棋" };
 const SPACING = 132;
 
@@ -570,6 +573,14 @@ async function poll() {
     const res = await fetch("/state", { cache: "no-store" });
     const data = await res.json();
     let needRender = false;
+    // 对手是谁（当前角色）：换角色后名字与头像跟着换，页面上的固定文案也要重刷
+    let opponentChanged = false;
+    if (data.opponent && (data.opponent.name !== (state.opponent || {}).name
+        || data.opponent.portrait !== (state.opponent || {}).portrait)) {
+      state.opponent = data.opponent;
+      applyOpponent();
+      opponentChanged = true;
+    }
     if (data.version !== state.version) {
       state.version = data.version;
       state.game = data.game;
@@ -621,12 +632,25 @@ async function poll() {
         if (line.includes("获胜")) showCard("对局结束", line, true);
       }
     }
-    if (needRender) render();
+    if (needRender || opponentChanged) render();
   } catch (e) { /* 服务器未就绪时静默重试 */ }
 }
 
-function appendLog(lines) {
-  const log = $("#log");
+/* 对手（当前角色）换人时：改显示名 + 标题 + 侧栏头像。
+   动态模板（水印、按钮、帮助）在下次 render() 里读 NAMES，所以这里只要改名字和静态文本。 */
+function applyOpponent() {
+  const who = opponent();
+  NAMES.sakura = who.name || DEFAULT_OPPONENT.name;
+  const title = `樱のボードゲーム室`;
+  document.title = `${NAMES.sakura}的桌游室`;
+  const sub = $("#app-sub"); if (sub) sub.textContent = `${NAMES.sakura}的桌游室`;
+  const room = $("#app-room"); if (room) room.textContent = title;
+  // 侧栏那行对手头像（玩家自己的头像是 avatar_user.svg，不动）
+  const avatar = boardWrap.querySelector(".player-row.sakura .avatar img");
+  if (avatar) { avatar.src = who.portrait || DEFAULT_OPPONENT.portrait; }
+}
+
+function appendLog(lines) {  const log = $("#log");
   for (const line of lines) {
     const div = document.createElement("div");
     if (line.startsWith("NAVI通知")) div.className = "navi";
@@ -708,7 +732,7 @@ function renderDiceCard(game) {
     }
     drawDie(rolls.user);
     info.innerHTML =
-      `先后手骰<br><span class="who">玩家 ${rolls.user}</span> · <span class="who">夜乃樱 ${rolls.sakura}</span><br>` +
+      `先后手骰<br><span class="who">玩家 ${rolls.user}</span> · <span class="who">${NAMES.sakura} ${rolls.sakura}</span><br>` +
       `<span class="sub">点数大者先手 → ${NAMES[game.first || game.turn]}执先</span>`;
     return;
   }
@@ -781,7 +805,7 @@ function renderPlayers(game) {
     const winner = game && game.winner === p;
     const active = game && !game.winner && game.turn === p;
     const avatar = p === "sakura"
-      ? `<img src="/art/avatar_sakura.png" alt="">`
+      ? `<img src="${opponent().portrait}" alt="" onerror="this.src='${DEFAULT_OPPONENT.portrait}'">`
       : `<img src="/art/avatar_user.svg" alt="" onerror="this.outerHTML='<span class=&quot;avatar-fallback&quot;>玩</span>'">`;
     const own = stats && stats[p]
       ? `<div class="own">地产 ${stats[p].properties} 处${stats[p].mortgaged ? `（抵押 ${stats[p].mortgaged}）` : ""} · 租金收益 ¥${stats[p].income}${stats[p].monopolies.length ? ` · 垄断 ${stats[p].monopolies.join("、")}` : ""}</div>`
@@ -852,7 +876,7 @@ function renderMonopoly(game, demo) {
       </defs></svg>
       <svg id="edges-svg"></svg>
       <div class="watermark" style="left:${bounds.w / 2}px;top:${bounds.h / 2}px;transform:translate(-50%,-50%)">
-        <div class="big">第二横滨市</div><div class="small">夜乃樱的棋盘</div></div>
+        <div class="big">第二横滨市</div><div class="small">${NAMES.sakura}的棋盘</div></div>
     </div></div>
     ${demo ? `<span class="demo-badge">演示棋盘</span>` : `<span class="live-badge">对局进行中</span>`}
     <span id="zoom-hint">拖动平移 · 滚轮缩放</span>
@@ -1164,7 +1188,7 @@ function renderMonopoly(game, demo) {
       data-id="${c.id}" data-wx="${wx + shift}" data-wy="${wy + shift}"
       style="--ring:${ring};left:${wx + shift}px;top:${wy + shift}px">${cellHTML(c)}</div>`);
   });
-  const tokenImgs = { user: "/art/avatar_user.svg", sakura: "/art/avatar_sakura.png" };
+  const tokenImgs = { user: "/art/avatar_user.svg", sakura: opponent().portrait };
   const actorNow = game.pending && game.pending.type === "route"
     ? game.pending.player : (game.winner ? null : game.turn);
   for (const p of ["user", "sakura"]) {
@@ -1386,21 +1410,21 @@ function renderActionBar(game, demo) {
             `<button class="${o === "skip" ? "ghost" : ""}" onclick="api('decide',{action:'${o}'}).then(()=>poll())">${labels[o] || o}</button>`).join("");
       }
     } else if (game.pending || game.walk) {
-      html = `<button class="pink" onclick="api('act_sakura').then(()=>poll())">请夜乃樱行动</button>
-        <span class="hint">${game.pending ? "夜乃樱正在决策" : "夜乃樱走格子中"}…</span>`;
+      html = `<button class="pink" onclick="api('act_sakura').then(()=>poll())">请${NAMES.sakura}行动</button>
+        <span class="hint">${game.pending ? `${NAMES.sakura}正在决策` : `${NAMES.sakura}走格子中`}…</span>`;
     } else if (game.turn === "user") {
       html = `<button onclick="api('roll').then(()=>poll())">🎲 掷骰子</button>
         <span class="hint">轮到你了，掷出几点走几格</span>`;
     } else {
-      html = `<button class="pink" onclick="api('act_sakura').then(()=>poll())">请夜乃樱行动</button>
-        <span class="hint">轮到夜乃樱了</span>`;
+      html = `<button class="pink" onclick="api('act_sakura').then(()=>poll())">请${NAMES.sakura}行动</button>
+        <span class="hint">轮到${NAMES.sakura}了</span>`;
     }
   } else if (game.kind === "gomoku") {
     if (game.turn === "user") {
       html = `<span class="hint">轮到你了，点击棋盘落子</span>`;
     } else {
-      html = `<button class="pink" onclick="api('act_sakura').then(()=>poll())">请夜乃樱行动</button>
-        <span class="hint">夜乃樱思考中…</span>`;
+      html = `<button class="pink" onclick="api('act_sakura').then(()=>poll())">请${NAMES.sakura}行动</button>
+        <span class="hint">${NAMES.sakura}思考中…</span>`;
     }
   }
   // 对局进行中也给一个重开入口：角色自己是不会开新局的（她只能说"你按按钮"）
@@ -1440,7 +1464,7 @@ function renderGomoku(game, demo) {
     }
     html += "</tr>";
   }
-  html += `</table><div class="legend">○ 玩家　● 夜乃樱</div></div></div>`;
+  html += `</table><div class="legend">○ 玩家　● ${NAMES.sakura}</div></div></div>`;
   boardWrap.innerHTML = html + (demo ? `<span class="demo-badge">演示棋盘 · 直接点棋盘就能开局落子</span>` : `<span class="live-badge">对局进行中</span>`);
 
   $("#info-card").style.display = "";
@@ -1456,10 +1480,10 @@ function renderGomoku(game, demo) {
           `api('set_style',{style:${v}}).then(()=>poll())`)).join("");
   const rolls = game.first_rolls || {};
   const rollLine = (rolls.user && rolls.sakura)
-    ? `先后手骰：玩家 ${rolls.user} · 夜乃樱 ${rolls.sakura} → ${NAMES[game.first || game.turn]}先手<br>` : "";
+    ? `先后手骰：玩家 ${rolls.user} · ${NAMES.sakura} ${rolls.sakura} → ${NAMES[game.first || game.turn]}先手<br>` : "";
   $("#info").innerHTML = rollLine + `第 ${game.move_count} 手${game.winner ? `，${NAMES[game.winner]} 获胜` : ""}` +
     `<div class="opt-line"><span class="opt-label">AI 难度</span><span class="opt-row">${diffSelect}</span></div>` +
-    `<div class="opt-line"><span class="opt-label">夜乃樱棋风</span><span class="opt-row">${styleSelect}</span></div>` +
+    `<div class="opt-line"><span class="opt-label">${NAMES.sakura}棋风</span><span class="opt-row">${styleSelect}</span></div>` +
     `<div class="sub" style="margin-top:8px;font-size:11px">棋风＝她的进攻/防守权重，默认值来自插件设置里的「五子棋棋风」（按角色性格设定）；这里的按钮是临时覆盖。</div>`;
   renderDiceCard(game);
   renderActionBar(game, demo);
@@ -1582,7 +1606,7 @@ function openHelp() {
     <h4>NAVI 事件卡图鉴（共 ${state.cards.length} 张）</h4>
     <div class="cards-grid">${cards}</div>
     <h4>五子棋</h4>
-    <p>点击棋盘交叉点落子；夜乃樱的棋由内置 AI 按当前难度代算，落子理由会写进对局记录。开局时各掷一次骰子决定先后手。</p>
+    <p>点击棋盘交叉点落子；${NAMES.sakura}的棋由内置 AI 按当前难度代算，落子理由会写进对局记录。开局时各掷一次骰子决定先后手。</p>
     <p style="margin-top:10px"><button style="border:none;border-radius:999px;padding:8px 22px;background:var(--blue);color:#fff;font-weight:700;cursor:pointer" onclick="document.getElementById('help-modal').classList.remove('show')">知道了</button></p>`;
   $("#help-modal").classList.add("show");
   state.helpOpen = true;

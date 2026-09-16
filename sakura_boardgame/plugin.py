@@ -137,6 +137,13 @@ def _make_handler(service: "BoardgameService", plugin_dir: Path):
                 elif path == "/state":
                     body = json.dumps(service.state_payload(), ensure_ascii=False).encode("utf-8")
                     self._send(200, body, "application/json; charset=utf-8")
+                elif path == "/portrait":
+                    # 当前角色的立绘（换角色后 URL 会带上新 id，不会吃到旧图）
+                    target = service.portrait_file()
+                    if target is None:
+                        self._send(404, b"no portrait", "text/plain")
+                    else:
+                        self._send_file(target)
                 elif path.startswith("/art/"):
                     name = path[len("/art/"):]
                     if not _ART_NAME_RE.match(name):
@@ -203,7 +210,74 @@ class BoardgameService:
         self._game = self._load()
         self._server = BoardServer(self, plugin_dir) if plugin_dir else None
         self._rng = random.Random()
+        self._opponent = {"id": "", "name": "", "portrait": ""}
+        self._build_identity()          # 先定对手是谁（对局记录里的名字要用它）
         self._persona = self._build_persona()
+
+    # ---- 对手身份（名字 / 立绘跟随当前角色）--------------------------
+
+    def _build_identity(self) -> dict[str, str]:
+        """读当前角色的名字与立绘，并把名字灌进引擎的显示名。
+
+        这样在 Sakura 里换角色，对局记录、侧栏、网页标题和棋盘棋子上的头像都跟着换，
+        插件本身不用改。读不到就退回默认（夜乃樱 + 内置立绘）。
+        """
+        info = {"id": "", "name": "", "portrait": ""}
+        try:
+            info = self._persona_module().identity(self._context)
+        except Exception as error:
+            self._logger.warning("读取当前角色身份失败，用默认名字与立绘", fields={
+                "reason_code": "IDENTITY_FAILED", "error_type": type(error).__name__})
+        label = engine.set_opponent_label(info.get("name"))
+        self._opponent = {
+            "id": info.get("id") or "",
+            "name": label,
+            # 有角色立绘就指向它，否则用插件自带的（网页里也有兜底）
+            "portrait": "/portrait" if info.get("portrait") else "/art/avatar_sakura.png",
+        }
+        self._logger.info("对手角色已确定", fields={
+            "character_id": self._opponent["id"] or "(无)",
+            "display_name": label,
+            "custom_portrait": bool(info.get("portrait")),
+        })
+        return self._opponent
+
+    def _refresh_identity(self) -> None:
+        """角色换了就重读（每次 /state 都问一次很便宜：只在 id 变化时才读角色包）。"""
+        if self._context is None:
+            return
+        try:
+            service = self._context.get("sakura.host.character")
+            current = service.current() if service is not None else {}
+            if str((current or {}).get("id") or "") != self._opponent.get("id"):
+                self._build_identity()
+        except Exception:
+            return
+
+    def opponent_payload(self) -> dict[str, str]:
+        self._refresh_identity()
+        portrait = self._opponent.get("portrait") or ""
+        if portrait == "/portrait":
+            # 带上角色 id 做缓存失效：换角色后 URL 变了，浏览器不会拿旧图
+            portrait = f"/portrait?c={self._opponent.get('id', '')}"
+        return {"name": self._opponent.get("name") or "", "portrait": portrait,
+                "id": self._opponent.get("id") or ""}
+
+    def portrait_file(self) -> Path | None:
+        """当前角色立绘的绝对路径；没有就 None（网页会退回插件自带的头像）。"""
+        self._refresh_identity()
+        if self._opponent.get("portrait") != "/portrait" or self._context is None:
+            return None
+        try:
+            service = self._context.get("sakura.host.character")
+            character_id = self._opponent.get("id") or ""
+            if service is None or not character_id:
+                return None
+            info = self._persona_module().identity(self._context)
+            path = Path(info.get("portrait") or "")
+            return path if path.is_file() else None
+        except Exception:
+            return None
 
     # ---- 打法性格 ---------------------------------------------------
 
@@ -348,6 +422,8 @@ class BoardgameService:
             "log": list(self._log),
             "lastEvent": self._last_event,
             "boardUrl": self._server.url if self._server else "",
+            # 对手是谁：网页拿它显示名字、按钮文案与棋子头像（换角色自动跟随）
+            "opponent": self.opponent_payload(),
             "cards": [
                 {"title": card["title"], "flavor": card["flavor"],
                  "effect": _EFFECT_DESC.get(card["effect"]["type"], lambda e: "特殊效果")(card["effect"])}
@@ -635,6 +711,7 @@ class BoardgameService:
             map_kind=str(values.get("map_kind") or "city"),
         )
         self._game = game
+        self._build_identity()                     # 换角色/换卡：名字与立绘先跟上
         self._persona = self._build_persona()      # 每局重读一次角色卡，改了卡就换棋风
         self._save()
         opening = f"新对局开始：{game.summary()} 先手：{PLAYER_LABEL[first if first in PLAYER_LABEL else game.turn]}。"
