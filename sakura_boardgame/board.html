@@ -292,9 +292,12 @@
   #log div.warn { color: var(--danger); border-left-color: var(--danger); background: rgba(232,99,126,0.07); }
   #log div.win { color: var(--gold); border-left-color: var(--gold); background: rgba(240,180,41,0.10); }
 
-  /* 弹窗（事件卡/帮助） */
+  /* 弹窗（事件卡/帮助/骰子）
+     **这里绝对不要加 backdrop-filter**：它是全屏的，底下压着整张地图（57 个 will-change 图钉图层
+     + 路网 SVG + 建筑体块），加模糊后滚动帮助、播骰子动画都要每帧重算整屏模糊——实测就是
+     "滚玩法说明比投骰子还卡"的根源。用半透明底色压暗背景即可，观感几乎一样。 */
   .modal { position: fixed; inset: 0; display: none; place-items: center; z-index: 50;
-    background: rgba(90,110,150,0.25); backdrop-filter: blur(3px); }
+    background: rgba(74, 94, 132, 0.45); }
   .modal.show { display: grid; }
   .e-card { width: 350px; padding: 26px 26px 22px; border-radius: 20px;
     background: linear-gradient(165deg, #ffffff, #eef4fd 75%);
@@ -317,7 +320,9 @@
   }
 
   #help-modal .help-box { width: min(760px, 92vw); max-height: 86vh; overflow-y: auto; padding: 24px 26px;
-    border-radius: 20px; background: #fff; border: 1px solid var(--panel-line); box-shadow: var(--shadow); }
+    border-radius: 20px; background: #fff; border: 1px solid var(--panel-line); box-shadow: var(--shadow);
+    /* 滚动隔离：内容重绘只影响这个框，不牵连背后的地图；滚到底也不把滚动传给页面 */
+    contain: content; overscroll-behavior: contain; }
   #help-modal h2 { font-size: 18px; color: var(--ink); margin-bottom: 12px; }
   #help-modal h4 { font-size: 13px; color: var(--blue-deep); margin: 16px 0 8px; letter-spacing: 2px; }
   #help-modal p, #help-modal li { font-size: 12.5px; color: var(--ink-dim); line-height: 1.8; }
@@ -1226,6 +1231,8 @@ function cellHTML(c) {
 
 function initPanZoom(bounds) {
   const vp = $("#map-viewport");
+  // 每次渲染都是新的图钉元素，景深缓存要作废（否则新元素拿不到 scale）
+  mapState.lastDof = null;
   // 视口元素每次渲染都是新建的，监听器随元素销毁，直接绑定即可
   let dragging = false, sx = 0, sy = 0;
   vp.addEventListener("pointerdown", (e) => {
@@ -1294,7 +1301,14 @@ function initPanZoom(bounds) {
 function applyTransform() {
   const canvas = $("#map-canvas");
   if (!canvas) return;
-  canvas.style.transform = `translate(${mapState.ox}px,${mapState.oy}px) scale(${mapState.zoom})`;  // 景深：离视口中心越远越小（范围拉开，拖拽时能明显看出远近）
+  canvas.style.transform = `translate(${mapState.ox}px,${mapState.oy}px) scale(${mapState.zoom})`;
+  /* 景深（离视口中心越远越小）要**逐个**改 50+ 个图钉的 transform/zIndex，是整个页面最贵的一段。
+     棋子动画的镜头跟随每帧只挪一两像素，没必要每帧重算 50+ 次——位移和缩放都没怎么变就跳过。
+     阈值取 6px：人眼看不出景深晚了一帧，但每帧省下上百次样式写入（投骰子时的卡顿主要来自这里）。 */
+  const last = mapState.lastDof;
+  if (last && Math.abs(last.zoom - mapState.zoom) < 0.002
+      && Math.abs(last.ox - mapState.ox) < 6 && Math.abs(last.oy - mapState.oy) < 6) return;
+  mapState.lastDof = { zoom: mapState.zoom, ox: mapState.ox, oy: mapState.oy };
   const vp = $("#map-viewport");
   const rect = vp.getBoundingClientRect();
   const cx = rect.width / 2, cy = rect.height / 2;
@@ -1324,7 +1338,10 @@ function applyTransform() {
     mark.style.marginTop = py + "px";
   }
 }
-window.addEventListener("resize", () => { if (state.game && state.game.kind === "monopoly") applyTransform(); });
+window.addEventListener("resize", () => {
+  mapState.lastDof = null;      // 视口尺寸变了，景深必须重算（否则会被上面的 6px 节流跳过）
+  if (state.game && state.game.kind === "monopoly") applyTransform();
+});
 setInterval(applyTransform, 400);  // 兜底：窗口缩放/拖动后重算景深
 
 function renderMonopolyInfo(game) {
@@ -1544,8 +1561,22 @@ function openHelp() {
     地图上的标记：<b style="color:#f0b429">金色粗线</b> = 这个选择会走到的路线（<b style="color:#f0b429">金色呼吸圈</b> = 这一程的落点，点它即选），
     <b style="color:var(--start)">紫色虚线圈</b> = 本回合的出发格。
     地产分四个街区（<b style="color:#4a8bc9">学园区</b> / <b style="color:#d95a72">街市</b> / <b style="color:#3f9e83">住宅区</b> / <b style="color:#4a5470">禁忌区</b>），
-    持有同一街区一半的地产（且都没抵押）时租金翻倍。走到无主地产可以买；走回自己的地产可以升级（租金×2）、抵押（回收半价）、赎回（六成价）或卖掉（三分之一）。
+    持有同一街区一半的地产（且都没抵押）时租金翻倍。走到无主地产可以买；走回自己的地产会出现下面的四个操作。
     付不起账单会强制抵押，全抵押还不够就破产，资产移交债主。回合上限后按<b>总资产</b>判定：现金 + 地产现价的六成。</p>
+    <h4>地产操作：升级 / 抵押 / 赎回 / 卖掉</h4>
+    <p>走回<b>自己的地产</b>时弹出这几个选项（现金不够的那项不会出现；满级、没抵押、又不够钱升级时会直接"安心歇脚"）。</p>
+    <ul>
+      <li><b>升级</b>（花现价的一半）→ 这块地租金 <b>×2</b>，每块地只能升 1 级。</li>
+      <li><b>抵押</b>（拿回现价的一半）→ 应急周转。抵押期间这块地<b>收不到租金</b>（别人踩上去免费路过）、
+        <b>不算进街区垄断</b>、也不能升级；地还是你的，以后能赎回来。<b>缺钱优先抵押，别急着卖。</b></li>
+      <li><b>赎回</b>（付现价的六成）→ 把抵押的地恢复成正常状态、重新开始收租。
+        <b>抵押→赎回走一圈净亏地价的一成</b>（半价拿到手、六成赎回来），而且地价每 8 回合会涨，隔越久赎回越贵。</li>
+      <li><b>卖掉</b>（未抵押拿三分之一；抵押中只想脱手只拿六分之一）→ 地退回<b>无主</b>，之后任何人走到都能买。</li>
+    </ul>
+    <p>两点容易误会：<b>抵押不会让别人买走你的地</b>——地只有两种方式易主：你主动卖掉（回到无主），
+    或者你破产（全部资产连同抵押状态移交债主，债主可以再赎回）；<b>抵押也不是白拿钱</b>，
+    它等于先用将来的六成价换现在的一半现金，所以它只适合"短期周转、手头宽裕了就赎回来"。
+    侧栏每块地的租金收益会随抵押立刻归零，可以照着看。</p>
     <h4>格子图例</h4>
     <div class="legend-grid">${legend}</div>
     <h4>NAVI 事件卡图鉴（共 ${state.cards.length} 张）</h4>
