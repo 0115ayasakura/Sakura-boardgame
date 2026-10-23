@@ -1,0 +1,25 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+const source = fs.readFileSync(new URL('../sakura_boardgame/board.html', import.meta.url), 'utf8');
+// Execute the production renderer eligibility block, not a copied predicate.
+const start = source.indexOf('  const VIEW =', source.indexOf('function renderMonopoly('));
+const end = source.indexOf('  if (!mapState.use3D', start);
+assert.ok(start > 0 && end > start);
+const eligibility = new Function('state','mapState','window','isGrid','demo', source.slice(start,end) + '\nreturn mapState.use3D;');
+const state = {boardView:{width:1920}};
+const window = {Board3D:{createBoard3D(){}}};
+assert.equal(eligibility(state,{},window,true,true),true,'grid demo uses current 3D renderer');
+assert.equal(eligibility(state,{},window,true,false),true,'live grid uses same renderer');
+assert.equal(eligibility(state,{},window,false,true),false,'city keeps DOM renderer');
+assert.equal(eligibility(state,{glFailed:true},window,true,true),false,'WebGL fallback retained');
+assert.equal(eligibility({}, {},window,true,true),false,'missing view fallback retained');
+assert.equal(eligibility(state,{board3d:{dead:true}},window,true,true),false,'dead renderer fallback retained');
+const styleStart = source.indexOf('function gomokuStyleDescription(');
+const styleEnd = source.indexOf('\nfunction renderGomoku',styleStart);
+const describe = new Function(source.slice(styleStart,styleEnd)+'\nreturn gomokuStyleDescription;')();
+assert.equal(describe({style:45,styleFollowCard:false}),'来源：手动选择 · 当前偏均衡');
+assert.equal(describe({style:15,styleFollowCard:true}),'来源：角色卡 · 当前偏稳健');
+assert.equal(describe({style:80,styleFollowCard:false}),'来源：手动选择 · 当前偏进攻');
+assert.ok(!source.includes('想跟回角色卡去插件设置里打开'));
+assert.ok(source.includes('五子棋棋风跟随角色卡'));
+console.log('Demo renderer and gomoku style regressions PASS');

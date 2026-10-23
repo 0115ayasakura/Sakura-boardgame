@@ -34,8 +34,13 @@ def _in_board(r: int, c: int) -> bool:
 
 
 def _point_pattern(board: list[list[int]], r: int, c: int, code: int) -> tuple[int, int]:
-    """假设在 (r,c) 落 code 子，返回四方向中最强的 (连子数, 开放端数)。"""
+    """假设在 (r,c) 落 code 子，返回四方向中最强的 (连子数, 开放端数)。
+
+    探测结束必须把 (r,c) 还原成调用前的值：它既可能是空位，也可能已经有子；
+    _search 会在 _apply 之后调用它，无条件写 0 会把刚下的这一手从棋盘上抹掉。
+    """
     best = (0, 0)
+    original = board[r][c]
     board[r][c] = code
     try:
         for dr, dc in DIRECTIONS:
@@ -52,7 +57,7 @@ def _point_pattern(board: list[list[int]], r: int, c: int, code: int) -> tuple[i
             if (count, open_ends) > best or (count >= 5 and best[0] < 5):
                 best = (count, open_ends)
     finally:
-        board[r][c] = 0
+        board[r][c] = original
     return best
 
 
@@ -107,11 +112,17 @@ def _revert(board: list[list[int]], r: int, c: int) -> None:
 
 
 def _search(board: list[list[int]], me: int, depth: int, aggression: float,
-            deadline: float, rng: random.Random, alpha: int = -10**9, beta: int = 10**9) -> tuple[int, int, int, int]:
-    """返回 (分数, r, c, 结点数)。分数从我方视角。"""
+            deadline: float, rng: random.Random, alpha: int = -10**9, beta: int = 10**9) -> tuple[int | None, int, int, int]:
+    """返回 (分数, r, c, 结点数)。分数从我方视角。
+
+    分数为 None 表示"没有结果"：deadline 在算出任何一手之前就到了，或所有
+    子层都超时而没有可用分数。调用方必须跳过它，绝不能拿 -10**9 之类的哨兵值
+    当分数取负——那会变成 +10**9 的伪胜分。部分算完就超时的情况仍返回已算出的
+    最好分数（真实评估值，不是哨兵）。
+    """
     opp = 3 - me
     candidates = _candidates(board, 8, rng, noise=0)
-    best_score = -10**9
+    best_score: int | None = None
     best_move = (candidates[0][0], candidates[0][1]) if candidates else (SIZE // 2, SIZE // 2)
     nodes = 0
     for r, c, _ in candidates:
@@ -120,16 +131,17 @@ def _search(board: list[list[int]], me: int, depth: int, aggression: float,
         _apply(board, r, c, me)
         count, open_ends = _point_pattern(board, r, c, me)
         if count >= 5:
-            score = 1_000_000
+            score: int | None = 1_000_000
+        elif depth <= 1:
+            score = _point_score(board, r, c, me, aggression)
         else:
-            if depth <= 1:
-                score = _point_score(board, r, c, me, aggression)
-            else:
-                reply = _search(board, opp, depth - 1, 1.0 - aggression, deadline, rng, -beta, -alpha)
-                score = -reply[0]
+            reply = _search(board, opp, depth - 1, 1.0 - aggression, deadline, rng, -beta, -alpha)
+            score = None if reply[0] is None else -reply[0]
         _revert(board, r, c)
         nodes += 1
-        if score > best_score:
+        if score is None:
+            continue
+        if best_score is None or score > best_score:
             best_score = score
             best_move = (r, c)
         if best_score > alpha:
@@ -196,7 +208,7 @@ def choose_move(board: list[list[int]], my_code: int, level: int,
         depth = 2 if level == 2 else 3
         width = 10 if level == 2 else 8
         trimmed = candidates[:width]
-        best_score = -10**9
+        best_score: int | None = None
         r, c = trimmed[0][0], trimmed[0][1]
         for cr, cc, _ in trimmed:
             if time.monotonic() > deadline:
@@ -204,8 +216,12 @@ def choose_move(board: list[list[int]], my_code: int, level: int,
             _apply(work, cr, cc, my_code)
             reply = _search(work, opp_code, depth - 1, 1.0 - aggression, deadline, rng)
             _revert(work, cr, cc)
+            if reply[0] is None:
+                # 这一手的子树在算出任何回应前就超时了：没有可用分数，跳过。
+                # （旧代码会把子层的 -10**9 取负成 +10**9，让超时变成"必胜"。）
+                continue
             score = -reply[0]
-            if score > best_score:
+            if best_score is None or score > best_score:
                 best_score = score
                 r, c = cr, cc
     return {"row": r + 1, "col": c + 1, "reason": _describe(board, r, c, my_code)}

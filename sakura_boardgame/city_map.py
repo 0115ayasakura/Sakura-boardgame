@@ -19,6 +19,11 @@ from __future__ import annotations
 
 import math
 
+try:
+    from . import theme as _theme
+except ImportError:
+    import theme as _theme  # type: ignore[no-redef]
+
 # ---------- 画布（单位＝格，1 格 ≈ 132px） ----------
 WORLD_W = 22.0
 WORLD_H = 14.0
@@ -104,6 +109,8 @@ DISTRICTS = {
     "daily": {"label": "住宅区", "color": "#3f9e83", "poly": _district_poly("daily")},
     "taboo": {"label": "荒废街区", "color": "#4a5470", "poly": _district_poly("taboo")},
 }
+# 上面的 label/color 只是**默认主题（第二横滨市）**的说法；真正显示时以当前主题为准
+# （见 theme.district_label / district_color）——街区的地理形状由这里的 poly 决定，主题改不了它。
 
 # ---------- 街道网络 ----------
 # role: ring = 单向主环（行进方向就是 main_path 的顺序）；artery = 环与环之间的双向主动脉；
@@ -166,7 +173,9 @@ PONDS = [(3.4, 10.6, 0.62, 0.38), (4.2, 4.0, 0.60, 0.36)]
 # 具名特殊格的场景归属（用户要求：黑列车在学园区）
 TOKEN_DISTRICT = {"train": "gakuen", "cat": "daily", "monster": "taboo"}
 
-# ---------- 地产名（每街区 7–9 块，够铺满内圈新加的街道） ----------
+# ---------- 地产名与事件格：**来自当前主题**（见 theme.py）----------
+# 原来是写死在这里的「第二横滨市」名单；现在改名层由主题提供，换个角色来玩就能换成他的世界观。
+# 数量必须与默认主题一致（每个街区 9/8/9/9），否则地图上分到的地产数量会变。
 PROPERTY_NAMES = {
     "gakuen": [("gate", "学园正门", 1, "poi-gate"), ("council", "学生会室", 2, "poi-council"),
                ("libcom", "图书馆委员会", 2, "poi-libcom"), ("explore", "探索委员会", 2, "poi-explore"),
@@ -189,37 +198,27 @@ PROPERTY_NAMES = {
               ("alley", "崩月家后巷", 2, "poi-alley")],
 }
 
-# ---------- 事件格序列（沿路循环铺设；无效果/抽卡类占多数，与用户要求一致） ----------
-SPECIAL_CYCLE = [
-    ("rest", "日常一幕", "badge-rest"),
-    ("navi", "NAVI播报", "badge-navi"),
-    ("rest", "日常一幕", "badge-rest"),
-    ("rest", "日常一幕", "badge-rest"),
-    ("navi", "NAVI播报", "badge-navi"),
-    ("rest", "中央广场", "badge-rest"),
-    ("bonus", "学园补助", "badge-bonus"),
-    ("rest", "日常一幕", "badge-rest"),
-    ("navi", "NAVI播报", "badge-navi"),
-    ("tax", "特别会计", "badge-tax"),
-    ("rest", "日常一幕", "badge-rest"),
-    ("navi", "NAVI播报", "badge-navi"),
-    ("rest", "日常一幕", "badge-rest"),
-    ("cat", "灰色的流浪猫", "badge-cat"),
-    ("rest", "日常一幕", "badge-rest"),
-    ("navi", "NAVI播报", "badge-navi"),
-    ("bonus", "学园补助", "badge-bonus"),
-    ("rest", "日常一幕", "badge-rest"),
-    ("tax", "特别会计", "badge-tax"),
-    ("navi", "NAVI播报", "badge-navi"),
-    ("rest", "日常一幕", "badge-rest"),
-    ("monster", "炭化之人", "badge-monster"),
-    ("rest", "日常一幕", "badge-rest"),
-    ("train", "黑列车", "badge-train"),
-    ("rest", "日常一幕", "badge-rest"),
-    ("navi", "NAVI播报", "badge-navi"),
-    ("rest", "日常一幕", "badge-rest"),
-    ("rest", "日常一幕", "badge-rest"),
-]
+
+def property_names() -> dict[str, list[list]]:
+    """当前主题的地产名池（默认主题的就是上面那份）。"""
+    return _theme.properties()
+
+
+def special_cycle() -> list[list[str]]:
+    """当前主题的事件格循环序列 [(类型, 页面上的名字, 徽章图标)]。"""
+    return _theme.special_cycle()
+
+
+def start_name() -> str:
+    return _theme.start_name()
+
+
+def token_district() -> dict[str, str]:
+    return _theme.token_district()
+
+
+# 具名特殊格与事件格在页面上的默认名字（主题没给就用这些）
+FALLBACK_SPECIAL = ("rest", "日常一幕", "badge-rest")
 
 
 # ---------- 几何工具 ----------
@@ -392,19 +391,20 @@ def build_city():
     ring_ids = street_nodes["ring"]
 
     # ---- 分配格子类型：环上的地产按街区给，支街与环上余量铺事件格 ----
-    prop_pool = {k: list(v) for k, v in PROPERTY_NAMES.items()}
-    special_pool = list(SPECIAL_CYCLE)
+    # 名字全部来自当前主题（默认主题就是「第二横滨市」那一套）
+    prop_pool = {k: [list(row) for row in rows] for k, rows in property_names().items()}
+    special_pool = [list(row) for row in special_cycle()]
     total_nodes = len(nodes)
     # 目标：地产约占一半，其余为事件格 + 起点（数量见模块级 PROPERTY_TARGET）
     property_target = PROPERTY_TARGET
     property_count = 0
 
     def take_special():
-        return special_pool.pop(0) if special_pool else ("rest", "日常一幕", "badge-rest")
+        return special_pool.pop(0) if special_pool else list(FALLBACK_SPECIAL)
 
     # 起点定在环上最靠西北的节点
     start_id = min(ring_ids, key=lambda i: nodes[i]["x"] + nodes[i]["y"])
-    nodes[start_id].update({"type": "start", "name": "学园前・起点", "icon": "badge-start"})
+    nodes[start_id].update({"type": "start", "name": start_name(), "icon": "badge-start"})
 
     # 先给环上节点按"隔一个放一个"的节奏铺地产，只放到六成，剩下的留给支街
     ring_cap = round(property_target * 0.55)
@@ -448,7 +448,8 @@ def build_city():
     # ---- 具名特殊格归位：黑列车在学园区、流浪猫在住宅区、炭化之人在荒废街区 ----
     # 这些格子有明确的场景归属（黑列车车站是学园内的地标），跟普通事件格一起排队铺会乱跑，
     # 所以铺完之后把它们和"目标街区里最近的一个空事件格"对调。
-    for kind, want in TOKEN_DISTRICT.items():
+    rest_name = _theme.cell_names().get("rest") or "日常一幕"
+    for kind, want in token_district().items():
         holders = [n for n in nodes if n["type"] == kind]
         if not holders or district_of(holders[0]["x"], holders[0]["y"]) == want:
             continue
@@ -464,7 +465,7 @@ def build_city():
         if spare is None:
             continue
         name, icon = holder["name"], holder["icon"]
-        holder.update({"type": "rest", "name": "日常一幕", "icon": "badge-rest"})
+        holder.update({"type": "rest", "name": rest_name, "icon": "badge-rest"})
         spare.update({"type": kind, "name": name, "icon": icon})
 
     # ---- 边：每条街内部相邻节点相连；环首尾相接 ----
@@ -628,9 +629,10 @@ def district_washes() -> list[dict]:
 
     边界已经是相邻两块**共用**的平滑曲线（见 `_curve`），所以这里不需要再做圆角或外推：
     四块严丝合缝——一直铺到地图边框（不留白），彼此之间也不重叠（不混色）。
+    标签与颜色取自当前主题（几何取这里的 poly，主题改不了形状）。
     """
     return [
-        {"key": key, "label": info["label"], "color": info["color"],
+        {"key": key, "label": _theme.district_label(key), "color": _theme.district_color(key, info["color"]),
          "poly": [[round(x, 3), round(y, 3)] for x, y in info["poly"]]}
         for key, info in DISTRICTS.items()
     ]

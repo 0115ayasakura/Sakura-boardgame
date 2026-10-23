@@ -5,4 +5,7 @@ __pycache__/
 sakura_boardgame/data/
 boardgame_preview_data/
 dist/
+release-assets/
+sakura_boardgame/config.json
+sakura_boardgame/state.json
 ?*.zip

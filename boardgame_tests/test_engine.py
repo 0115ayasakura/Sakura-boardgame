@@ -34,7 +34,9 @@ def expect_error(fn, needle: str) -> None:
 
 
 def _fake_dice(value: int):
-    return lambda: type("R", (), {"randint": staticmethod(lambda a, b: value)})()
+    """固定点数的假骰子：randint 恒返回 value，randrange 落在第 0 个（抽事件要它）。"""
+    return lambda: type("R", (), {"randint": staticmethod(lambda a, b: value),
+                                  "randrange": staticmethod(lambda n: 0)})()
 
 
 def _fake_card(index: int):
@@ -62,84 +64,43 @@ def _reachable(game: MonopolyGame) -> set[int]:
 
 
 def test_map_generation_connectivity_and_determinism() -> None:
-    for seed in range(15):
-        for size in (12, 24, 28, 48, 96):
-            game = MonopolyGame(size=size, dice_sides=6, seed=seed)
-            assert len(game.cells) == game.size
-            # 随机图的格子是"网格上的随机子集"：占据一块 cols×rows 的网格里的若干格
-            assert game.size <= game.cols * game.rows
-            assert game.size <= 96 and game.size >= 12
-            # 格子间距要够开（图钉/名字牌不会叠在一起）
-            pts = [(c["x"], c["y"]) for c in game.cells]
-            for i in range(game.size):
-                for j in range(i + 1, game.size):
-                    gap = math.hypot(pts[i][0] - pts[j][0], pts[i][1] - pts[j][1])
-                    assert gap >= 1.2, f"种子{seed} 有两格挨太近：{gap:.2f}"
-            # 支线：跨过主路至少两个节点，且不穿过任何主路段（不能出现"支线穿主线"）
-            if game.main_path:
-                trunk = game.main_path
-                index_of = {node: i for i, node in enumerate(trunk)}
-                segs = [(pts[trunk[i]], pts[trunk[i + 1]]) for i in range(len(trunk) - 1)]
-                segs.append((pts[trunk[-1]], pts[trunk[0]]))
-
-                def _cross(o, p, q):
-                    return (p[0] - o[0]) * (q[1] - o[1]) - (p[1] - o[1]) * (q[0] - o[0])
-
-                def _crossed(s, t):
-                    if s[0] in t or s[1] in t:
-                        return False
-                    d1, d2 = _cross(t[0], t[1], s[0]), _cross(t[0], t[1], s[1])
-                    d3, d4 = _cross(s[0], s[1], t[0]), _cross(s[0], s[1], t[1])
-                    return ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0))
-
-                # 主路自己不许交叉（用户直接指出过这个问题）
-                for x in range(len(segs)):
-                    for y in range(x + 1, len(segs)):
-                        assert not _crossed(segs[x], segs[y]), f"种子{seed} 主路自交叉"
-
-                for a, b in game.branches:
-                    span = abs(index_of[a] - index_of[b])
-                    assert span >= 3, f"支线只跨 {span} 步，会形成三角形"
-                    for s in segs:
-                        if s[0] in (pts[a], pts[b]) or s[1] in (pts[a], pts[b]):
-                            continue
-                        assert not _crossed((pts[a], pts[b]), s), f"种子{seed} 支线 {a}->{b} 穿过主路"
-            # 连通
-            seen = _reachable(game)
-            assert len(seen) == game.size, f"seed={seed} size={size} 不连通"
-            # 边合法且无重边
-            edge_set = set()
-            for a, b in game.edges:
-                assert a != b and 0 <= a < game.size and 0 <= b < game.size
-                key = (min(a, b), max(a, b))
-                assert key not in edge_set, "重复边"
-                edge_set.add(key)
-            # 起点
-            starts = [c for c in game.cells if c["type"] == "start"]
-            assert len(starts) == 1
-            # 特殊格齐全
-            for required in ("navi", "cat", "monster", "train"):
-                assert any(c["type"] == required for c in game.cells), required
-            # 地产组内名不重复、组归属合法
-            for group in MONOPOLY_GROUP_NAMES:
-                names = [c["name"] for c in game.cells if c["type"] == "property" and c["group"] == group]
-                assert len(names) == len(set(names)) or len(names) > 4, (group, names)
-    # 确定性：同 seed 两次生成完全一致
-    a = MonopolyGame(size=28, dice_sides=6, seed=777)
-    b = MonopolyGame(size=28, dice_sides=6, seed=777)
-    assert a.to_dict() == b.to_dict()
-    # 大多数地图存在岔路（度 >= 3 的节点）
-    branchy = 0
-    for seed in range(20):
-        game = MonopolyGame(size=28, dice_sides=6, seed=seed)
-        if any(len(ns) >= 3 for ns in game._neighbors.values()):
-            branchy += 1
-    assert branchy >= 15, f"岔路地图出现率过低：{branchy}/20"
+    """Only two fixed maps remain; seed/obsolete requested scale never rebuild their routes."""
+    for kind in ("city", "grid"):
+        baseline = MonopolyGame(size=28, dice_sides=6, seed=777, map_kind=kind)
+        for seed in range(5):
+            for size in (12, 24, 28, 48, 96):
+                game = MonopolyGame(size=size, dice_sides=6, seed=seed, map_kind=kind)
+                assert game.cells == baseline.cells
+                assert game.edges == baseline.edges
+                assert game.main_path == baseline.main_path
+                assert game.branches == baseline.branches
+                assert len(game.cells) == game.size == 57
+                assert len(_reachable(game)) == game.size
+                edge_set = set()
+                for a, b in game.edges:
+                    assert a != b and 0 <= a < game.size and 0 <= b < game.size
+                    key = (min(a, b), max(a, b))
+                    # City streets share four segments by design; only the grid uses unique edges.
+                    if kind == "grid":
+                        assert key not in edge_set
+                    edge_set.add(key)
+                for chain in game.branches:
+                    assert len(chain) >= 2
+                    for a, b in zip(chain, chain[1:]):
+                        assert (min(a, b), max(a, b)) in edge_set
+                assert len([c for c in game.cells if c["type"] == "start"]) == 1
+                assert len([c for c in game.cells if c["type"] == "property"]) > 0
+                assert any(len(ns) >= 3 for ns in game._neighbors.values())
+        assert baseline.to_dict() == MonopolyGame(size=5, dice_sides=6, seed=777, map_kind=kind).to_dict()
 
 
-def test_map_size_clamp() -> None:
-    assert MonopolyGame(size=5, dice_sides=6, seed=1).size >= 12
-    assert MonopolyGame(size=500, dice_sides=6, seed=1).size <= 96
+def test_removed_map_size_is_ignored() -> None:
+    for kind in ("city", "grid", "random"):
+        a = MonopolyGame(size=5, dice_sides=6, seed=1, map_kind=kind)
+        b = MonopolyGame(size=500, dice_sides=6, seed=1, map_kind=kind)
+        assert a.size == b.size == 57
+        assert a.cells == b.cells and a.edges == b.edges
+        assert a.map_kind == ("grid" if kind == "grid" else "city")
 
 
 def test_monopoly_players_start_on_start_node() -> None:
@@ -173,20 +134,24 @@ def test_map_has_no_dead_ends_and_branches_rejoin() -> None:
 
 
 def test_map_cell_composition() -> None:
-    """格子构成：地产 + 日常 + NAVI 应占绝大多数，特殊惩罚格只是点缀。"""
+    """城市图的格子构成：地产 ≈一半，其余是旧格的零星点缀。
+
+    ⚠️ 六种新形式（金币/商店/游戏/事件）**只属于等距立体的格子棋盘**，
+    城市图照旧用旧格（用户 2026-09-21 定）——所以这里查的是旧格。
+    """
     for size in (24, 28, 48, 96):
         game = MonopolyGame(size=size, dice_sides=6, seed=11)
         counts = Counter(cell["type"] for cell in game.cells)
         total = sum(counts.values())
-        main = counts["property"] + counts["rest"] + counts["navi"]
-        assert main / total >= 0.75, (size, counts)
-        assert counts["property"] / total >= 0.4, (size, counts)
-        # 惩罚/奖励类格子总数不超过 1/4
-        extra = counts["tax"] + counts["bonus"] + counts["cat"] + counts["monster"] + counts["train"]
-        assert extra / total <= 0.25, (size, counts)
-        # 四种特殊格至少各一处
+        assert counts["property"] / total >= 0.35, (size, counts)
+        # 六种新形式一个都不该冒出来
+        for new_form in ("coin", "shop", "game", "event"):
+            assert counts[new_form] == 0, (size, new_form, counts)
+        assert counts["start"] == 1, (size, counts)
         for required in ("navi", "cat", "monster", "train"):
             assert counts[required] >= 1, (size, required, counts)
+        # NAVI / 日常 加起来不该喧宾夺主
+        assert (counts["navi"] + counts["rest"]) / total <= 0.5, (size, counts)
 
 
 def test_monopoly_stats_reporting() -> None:
@@ -212,6 +177,13 @@ def _cell(i, x, y, kind="rest", name="日常一幕", group=None, tier=0, owner=N
             "tier": tier, "price": tier * 100, "owner": owner, "level": level, "mortgaged": mortgaged}
 
 
+def _flags():
+    """一份完整的 flags 初始值（商店/特殊骰子/倍率都要在，否则结算路径会 KeyError）。"""
+    return {p: {"salary_next": False, "rent_free": False, "dice_bonus": 0,
+                "pick_dice": False, "buff": None, "buff_left": 0}
+            for p in ("user", "sakura")}
+
+
 def _build_game(cells, edges, positions=None, turn="user", dice=1, cash=None):
     """用显式格子/边构造大富翁局，绕开随机地图。"""
     game = MonopolyGame.__new__(MonopolyGame)
@@ -226,10 +198,11 @@ def _build_game(cells, edges, positions=None, turn="user", dice=1, cash=None):
     game.cash = dict(cash or {"user": start, "sakura": start})
     game.positions = dict(positions or {"user": 0, "sakura": 0})
     game.skip_pending = {"user": False, "sakura": False}
-    game.flags = {p: {"salary_next": False, "rent_free": False, "dice_bonus": 0} for p in ("user", "sakura")}
+    game.flags = _flags()
     game.turn = turn
     game.winner = None
     game.move_count = 0
+    game.dice_turn = 0
     game.max_rounds = 100
     game.pending = None
     game._walk = None
@@ -378,7 +351,7 @@ def test_monopoly_property_management() -> None:
 
 def test_monopoly_monopoly_multiplier_and_rent() -> None:
     game = MonopolyGame(size=12, dice_sides=6, seed=1)
-    # 显式构造两块同组地产：价格 200 → 基础租金 100
+    # 显式构造两块同组地产：价格 200 → 基础租金 round(200/1.5)=133（2026-10-01 分母 2→1.5）
     props = [
         {"id": 1, "x": 0, "y": 0, "type": "property", "name": "家庭餐厅", "group": "shopping",
          "tier": 2, "price": 200, "owner": None, "level": 0, "mortgaged": False},
@@ -391,17 +364,17 @@ def test_monopoly_monopoly_multiplier_and_rent() -> None:
     game.move_count = 0
 
     assert game._has_monopoly("user", "shopping") is False
-    assert game._rent(props[0]) == 100  # 无主 → 基础租金
+    assert game._rent(props[0]) == 133  # 无主 → 基础租金
 
     props[0]["owner"] = "user"
     assert game._has_monopoly("user", "shopping") is False  # 只持一块不算垄断
     props[1]["owner"] = "user"
     assert game._has_monopoly("user", "shopping") is True
-    assert game._rent(props[0]) == 200  # 垄断翻倍
+    assert game._rent(props[0]) == 266  # 垄断翻倍
     assert game._player_monopolies("user") == ["shopping"]
 
     props[0]["level"] = 1
-    assert game._rent(props[0]) == 400  # 升级再翻倍
+    assert game._rent(props[0]) == 532  # 升级再翻倍
 
     props[1]["mortgaged"] = True
     assert game._has_monopoly("user", "shopping") is False  # 任一抵押即失去垄断
@@ -426,7 +399,7 @@ def test_monopoly_hold_share_rule() -> None:
     assert need("user", "shopping") is False
     game.cells[2]["owner"] = "user"         # 3/5 = 60% → 算垄断
     assert need("user", "shopping") is True
-    assert game._rent(game.cells[0]) == 200  # 100 基础 ×2 垄断
+    assert game._rent(game.cells[0]) == 266  # 133 基础（round(200/1.5)）×2 垄断
     game.cells[2]["mortgaged"] = True        # 抵押掉一块就掉回 40%
     assert need("user", "shopping") is False
     game.cells[2]["mortgaged"] = False
@@ -530,22 +503,56 @@ def test_monopoly_round_limit_and_price_inflation() -> None:
 # ================== 特殊格与事件卡 ==================
 
 def test_monopoly_special_cells() -> None:
-    game = MonopolyGame(size=12, dice_sides=6, seed=9)
-    # 找格子直接结算
+    """游戏格：掷骰判输赢；输了记成日常一幕（不再直接扣钱）。
+
+    游戏格 / 金币格 / 事件格都是**格子棋盘专属**的格，所以要显式用 map_kind="grid"。
+    """
+    game = MonopolyGame(size=12, dice_sides=6, seed=9, map_kind="grid")
     base = engine.MONOPOLY_START_CASH
-    for required, expect_cash in (("cat", base - engine.MONOPOLY_CAT_COST + engine.MONOPOLY_CAT_GAIN),
-                                  ("monster", base - engine.MONOPOLY_MONSTER_TOLL),
-                                  ("train", base - engine.MONOPOLY_TRAIN_TOLL)):
-        cell = next(c for c in game.cells if c["type"] == required)
-        game.cash["user"] = engine.MONOPOLY_START_CASH
+    game_cells = [c for c in game.cells if c["type"] == "game"]
+    assert game_cells, "格子棋盘上应有游戏格"
+
+    # 输：什么都不发生（现金不变），但会记一条"日常一幕"
+    lost = False
+    for cell in game_cells:
+        game.cash["user"] = base
+        game.pending = None
+        game._walk = None
+        game._effect_rng = _fake_dice(1)        # 效果骰必输（1 < MONOPOLY_GAME_WIN_ROLL）
+        story = []
+        outcome = game._resolve_landing("user", cell["id"], True, story)
+        if outcome["kind"] == "game_lose":
+            assert game.cash["user"] == base, game.cash["user"]
+            assert any("日常" in line or "什么都没" in line for line in story), story
+            lost = True
+            break
+    assert lost, "必输的骰子应当至少命中一次 game_lose"
+
+    # 赢：奖励按 sub 结算，且不会扣钱
+    for cell in game_cells:
+        game.cash["user"] = base
+        game.pending = None
+        game._walk = None
+        game._effect_rng = _fake_dice(6)        # 效果骰必赢
+        story = []
+        outcome = game._resolve_landing("user", cell["id"], True, story)
+        assert outcome["kind"] == "game_win", outcome
+        assert game.cash["user"] >= base, (cell["sub"], game.cash["user"])
+
+    # 金币格：三档之一，现金只增不减
+    coin = next(c for c in game.cells if c["type"] == "coin")
+    tiers = set(engine.coin_tiers())
+    for _ in range(20):
+        game.cash["user"] = base
         game.pending = None
         game._walk = None
         story = []
-        outcome = game._resolve_landing("user", cell["id"], True, story)
-        assert game.cash["user"] == expect_cash, (required, game.cash["user"])
-        assert outcome["kind"] == required
-    # NAVI 卡：指定抽“猫的祝福”
-    navi = next(c for c in game.cells if c["type"] == "navi")
+        outcome = game._resolve_landing("user", coin["id"], True, story)
+        assert outcome["kind"] == "coin", outcome
+        assert game.cash["user"] - base in tiers, (game.cash["user"], tiers)
+
+    # 事件格：指定抽"猫的祝福"
+    navi = next(c for c in game.cells if c["type"] == "event")
     game.pending = None
     game._walk = None
     game.flags["user"]["dice_bonus"] = 0
@@ -554,19 +561,81 @@ def test_monopoly_special_cells() -> None:
     outcome = game._resolve_landing("user", navi["id"], True, story)
     assert outcome["kind"] == "navi_card" and game.flags["user"]["dice_bonus"] == 1
 
-    # 全部事件卡文案都不含第二人称“你”（避免对夜乃樱用错人称）
+    # 全部事件卡文案都不含第二人称"你"（避免对夜乃樱用错人称）
     for index in range(len(EVENT_CARDS)):
         game.cash.update({"user": engine.MONOPOLY_START_CASH, "sakura": engine.MONOPOLY_START_CASH})
         game.pending = None
         game._walk = None
         game._last_walk = None
         game.winner = None
-        game.flags = {p: {"salary_next": False, "rent_free": False, "dice_bonus": 0} for p in ("user", "sakura")}
+        game.flags = _flags()
         game._draw_card = _fake_card(index)
         story = []
         game._resolve_landing("user", navi["id"], True, story)
         navi_line = next(entry for entry in story if entry.startswith("NAVI通知"))
         assert "你" not in navi_line, navi_line
+
+
+def test_monopoly_shop_and_pick_dice() -> None:
+    """商店格：买特殊骰子后下一次掷骰要自选点数；买倍率影响下一次收付。
+
+    商店是**格子棋盘专属**的格，所以要显式用 map_kind="grid" 开一局。
+    """
+    game = MonopolyGame(size=24, dice_sides=6, seed=21, map_kind="grid")
+    shop = next(c for c in game.cells if c["type"] == "shop")
+    base = engine.MONOPOLY_START_CASH
+    game.cash["user"] = base
+    game.pending = None
+    game._walk = None
+    story = []
+    outcome = game._resolve_landing("user", shop["id"], True, story)
+    assert outcome["kind"] == "offer_shop" and game.pending, outcome
+    assert game.pending["type"] == "shop" and game.pending["player"] == "user"
+    assert "buy_dice" in game.pending["options"] and "skip" in game.pending["options"]
+
+    # 买骰子：扣钱、标记 pick_dice
+    price = engine.MONOPOLY_SHOP_DICE_PRICE
+    game.decide("user", "buy_dice")
+    assert game.cash["user"] == base - price, game.cash["user"]
+    assert game.flags["user"]["pick_dice"] is True
+
+    # 显式使用持有的自定义骰时，才让玩家选点数。
+    game.pending = None
+    game.turn = "user"
+    game.skip_pending["user"] = False
+    result = game.roll("user", use_custom_die=True)
+    assert result["pending"] and result["pending"]["type"] == "dice", result["pending"]
+    assert result["pending"]["options"] == [str(n) for n in range(1, 7)]
+    assert game.flags["user"]["pick_dice"] is True, "选完之前不该消耗掉"
+    game.decide("user", "6")
+    # 特殊骰子在"定点数"那一刻就该消耗掉。唯一的例外：这一 walk 恰好落在
+    # 「异色骰子」游戏格且掷赢了 —— 那是又拿到一颗新的（2026-09-30 新事件）。
+    landed = game.cells[game.positions["user"]]
+    if not (landed["type"] == "game" and landed.get("sub") == "dice_drop"):
+        assert game.flags["user"]["pick_dice"] is False
+    assert game.positions["user"] != shop["id"] or game.pending or game.winner
+
+    # 现金增益倍率：入账按倍率放大
+    game.flags["user"]["buff"] = "gain"
+    game.flags["user"]["buff_left"] = engine.MONOPOLY_SHOP_BUFF_ROUNDS
+    before = game.cash["user"]
+    got = game._gain("user", 100)
+    assert got == round(100 * engine.MONOPOLY_SHOP_BUFF_GAIN), got
+    assert game.cash["user"] == before + got
+
+    # 节流倍率：扣款按倍率缩小
+    game.flags["user"]["buff"] = "loss"
+    before = game.cash["user"]
+    game._pay("user", 100, None, [])
+    assert game.cash["user"] == before - round(100 * engine.MONOPOLY_SHOP_BUFF_LOSS), game.cash["user"]
+
+    # 倍率有回合数，走完会自己清掉
+    game.flags["user"]["buff"] = "gain"
+    game.flags["user"]["buff_left"] = 1
+    story = []
+    game._tick_buff("user", story)
+    assert game.flags["user"]["buff"] is None and game.flags["user"]["buff_left"] == 0
+    assert story, "倍率结束时应有播报"
 
 
 def test_monopoly_full_random_games() -> None:
@@ -902,6 +971,109 @@ def test_decide_returns_full_path_and_cross_turn_no_uturn() -> None:
     data = tri.to_dict()
     restored = restore_game(data)
     assert restored.last_step == tri.last_step
+
+
+def _fake_dice_seq(values: list[int]):
+    """按序列出点数的假骰子：randint 依次弹出 values，randrange 落在第 0 个。"""
+    queue = list(values)
+
+    def roll():
+        return type("R", (), {"randint": staticmethod(lambda a, b: queue.pop(0) if queue else values[-1]),
+                              "randrange": staticmethod(lambda n: 0)})()
+    return roll
+
+
+def test_monopoly_shop_gain_requires_dice_check() -> None:
+    """商店改成"骰子 + 增益"两件货（用户 2026-09-30）：
+    · 货架上不再有"节流道具"（buy_loss）——它变成买增益判定失败拿到的减益；
+    · 买增益付完钱要**掷骰判定**：点数 ≥ 骰子最大点数一半 → 拿增益；
+      没过 → 钱照扣、拿减益（接下来几回合支出 ×1.5）；
+    · 判定的经过记进 _last_check（网页拿它放过程弹窗）。
+    """
+    game = MonopolyGame(size=24, dice_sides=6, seed=31, map_kind="grid")
+    shop = next(c for c in game.cells if c["type"] == "shop")
+    game.cash["user"] = engine.MONOPOLY_START_CASH
+    game._walk = None
+    story = []
+    game._resolve_landing("user", shop["id"], True, story)
+    assert game.pending and game.pending["type"] == "shop"
+    assert set(game.pending["options"]) == {"buy_dice", "buy_gain", "buy_draw", "skip"}, game.pending["options"]
+    assert "loss" not in game.pending["items"], "货架上不该再有节流道具"
+    assert "buy_loss" not in game.pending["options"]
+
+    # 判定成功线 = 骰子最大点数的一半（向上取整）：d6 → 3
+    assert engine.shop_check_threshold(6) == 3
+    assert engine.shop_check_threshold(4) == 2
+
+    # 掷出 5 点 → 判定通过，拿增益
+    price = engine.MONOPOLY_SHOP_GAIN_PRICE
+    game._effect_rng = _fake_dice_seq([5])
+    game.decide("user", "buy_gain")
+    check = game._last_check
+    assert check and check["roll"] == 5 and check["threshold"] == 3 and check["success"] is True, check
+    assert game.cash["user"] == engine.MONOPOLY_START_CASH - price
+    assert game.flags["user"]["buff"] == "gain" and game.flags["user"]["buff_left"] == engine.MONOPOLY_SHOP_BUFF_ROUNDS
+    assert check["seq"] >= 1
+
+    # 减益：支出 ×1.5（判定失败才拿得到的那个）
+    game.flags["user"]["buff"] = "loss_up"
+    game.flags["user"]["buff_left"] = engine.MONOPOLY_SHOP_BUFF_ROUNDS
+    before = game.cash["user"]
+    game._pay("user", 100, None, [])
+    assert game.cash["user"] == before - round(100 * engine.MONOPOLY_SHOP_BUFF_LOSS_UP)
+
+    # 判定失败 → 钱照扣、拿减益
+    game2 = MonopolyGame(size=24, dice_sides=6, seed=32, map_kind="grid")
+    shop2 = next(c for c in game2.cells if c["type"] == "shop")
+    game2.cash["user"] = engine.MONOPOLY_START_CASH
+    game2._walk = None
+    game2._resolve_landing("user", shop2["id"], True, [])
+    game2._effect_rng = _fake_dice_seq([1])
+    game2.decide("user", "buy_gain")
+    check2 = game2._last_check
+    assert check2 and check2["roll"] == 1 and check2["success"] is False, check2
+    assert game2.cash["user"] == engine.MONOPOLY_START_CASH - engine.MONOPOLY_SHOP_GAIN_PRICE, "钱照扣"
+    assert game2.flags["user"]["buff"] == "loss_up"
+
+
+def test_game_cell_dice_drop_event() -> None:
+    """游戏格新增加入「异色骰子」（用户 2026-09-30：游戏格里要有概率拿到特殊骰子）：
+    主题包替换整份事件列表时它也要接回去；赢下它 = 拿到一次自选点数；
+    结算经过记进 _last_landing（网页拿它放过程弹窗）。
+    """
+    names = [e["key"] for e in engine.game_events()]
+    assert "dice_drop" in names, names
+    # 主题包自己给的那份也要被接上
+    saved = engine._theme._current if hasattr(engine._theme, "_current") else None
+    try:
+        engine._theme.set_theme("dimension_lovers")
+        assert "dice_drop" in [e["key"] for e in engine.game_events()]
+    finally:
+        engine._theme.set_theme(saved.id if saved else None)
+
+    game = MonopolyGame(size=24, dice_sides=6, seed=33, map_kind="grid")
+    cell = next(c for c in game.cells if c["type"] == "game")
+    # 这张图第一个游戏格的名目就固定是「异色骰子」（grid_map 的 game_pool 开头插了一件）
+    assert cell["sub"] == "dice_drop", cell
+    # randrange 给 0、randint 给 6 → 事件照抽、掷骰赢
+    game._effect_rng = _fake_dice(6)
+    story = []
+    result = game._resolve_landing("user", cell["id"], True, story)
+    assert result["kind"] == "game_win" and result["event"] == "dice_drop", result
+    assert game.flags["user"]["pick_dice"] is True, "赢了要拿到自选点数"
+    landing = game._last_landing
+    assert landing and landing["event"] == "dice_drop" and landing["won"] is True
+    assert landing["roll"] == 6 and landing["seq"] >= 1 and landing["reward"], landing
+
+    # 输了（掷 1 点）拿不到骰子，但结算经过照样记（网页弹窗要演全过程）
+    game2 = MonopolyGame(size=24, dice_sides=6, seed=34, map_kind="grid")
+    cell2 = next(c for c in game2.cells if c["type"] == "game")
+    game2._effect_rng = _fake_dice(1)
+    story2 = []
+    result2 = game2._resolve_landing("user", cell2["id"], True, story2)
+    assert result2["kind"] == "game_lose" and result2["event"] == "dice_drop", result2
+    assert game2.flags["user"]["pick_dice"] is False
+    assert game2._last_landing and game2._last_landing["won"] is False
 
 
 if __name__ == "__main__":

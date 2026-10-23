@@ -5,6 +5,7 @@ import json
 import pathlib
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 
@@ -15,12 +16,13 @@ sys.path.insert(0, str(ROOT / "sakura_boardgame"))
 
 import plugin as plugin_module
 import engine as engine_mod
+import persona as persona_mod      # 棋风也是从角色卡推的，测试要能复算
 from engine import GameError
 
 
 class FakeConfig:
     def __init__(self) -> None:
-        self.values = {"dice_sides": 6, "track_length": 16, "gomoku_level": 2, "gomoku_style": 45,
+        self.values = {"decision_driver": "algorithm", "dice_sides": 6, "track_length": 16, "gomoku_level": 2, "gomoku_style": 45,
                        "auto_open_board": False, "auto_narrate": True}
 
     def get(self) -> dict:
@@ -46,6 +48,7 @@ class FakeContext:
         self.character_package = character_package
         self.display_name = display_name if display_name is not None else self.TEST_DISPLAY_NAME
         self.tools: dict[str, object] = {}
+        self.tool_descriptors: dict[str, dict] = {}
         self.context_contributions: list = []
         self.effects: list = []
         self.logs: list[str] = []
@@ -64,6 +67,7 @@ class FakeContext:
         class Tools:
             def register(self, descriptor, handler):
                 self_ref.tools[descriptor["name"]] = handler
+                self_ref.tool_descriptors[descriptor["name"]] = descriptor
 
         class ContextHost:
             def register(self, descriptor, builder):
@@ -154,6 +158,11 @@ class FakeContext:
             fn()
 
 
+# 回环地址不走代理：带 http_proxy 的终端里，urllib 会把 127.0.0.1 也交给代理，
+# 于是"端口已关闭"会变成 502 Bad Gateway，测试就会误判"服务器没关"。
+urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))
+
+
 def http_get(url, expect_error=False):
     try:
         with urllib.request.urlopen(url, timeout=5) as response:
@@ -167,8 +176,17 @@ def http_get(url, expect_error=False):
 def http_post(url, payload):
     data = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(request, timeout=20) as response:
-        return response.status, json.loads(response.read())
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as error:
+        # Business rejections now use HTTP status semantics. Still validate the
+        # JSON envelope; do not turn arbitrary server failures into success.
+        if error.code not in (400, 409):
+            raise
+        result = json.loads(error.read())
+        assert result.get("ok") is False and isinstance(result.get("error"), str), result
+        return error.code, result
 
 
 def main() -> None:
@@ -178,9 +196,18 @@ def main() -> None:
 
         # ---- 注册面 ----
         assert set(ctx.tools) == {
-            "boardgame_start", "boardgame_state", "boardgame_roll",
-            "boardgame_place", "boardgame_decide", "boardgame_end",
+            "boardgame_start", "boardgame_state", "boardgame_roll", "boardgame_place",
+            "boardgame_decide", "boardgame_auto", "boardgame_undo", "boardgame_end",
+            "boardgame_agent_state", "boardgame_agent_commit",
         }, ctx.tools.keys()
+        # Real Sakura starts each model turn with only default/plugin groups.
+        # Registration alone is insufficient: token tools must survive that filter.
+        initially_visible = {
+            name for name, spec in ctx.tool_descriptors.items()
+            if spec.get('group', 'default') in {'default', 'plugin'}
+        }
+        assert {'boardgame_agent_state', 'boardgame_agent_commit'} <= initially_visible
+        assert 'boardgame_auto' not in initially_visible, 'do not expose an algorithm shortcut'
         assert "race" not in str(ctx.tools), "赛道骰子应已移除"
         assert len(ctx.context_contributions) == 1
         assert "openBoard" in ctx.settings_actions
@@ -194,6 +221,8 @@ def main() -> None:
         cold_text = json.dumps(cold, ensure_ascii=False)
         assert "http://127.0.0.1:" in cold_text, cold_text[:200]
         assert "boardgame_start" in cold_text
+        # 桌游引导只在有对局时注入：平时闲聊不该被塞"每步先解说再动作"这类要求
+        assert "【桌游引导】" not in cold_text, cold_text[:300]
         # 「+」菜单：注册了「打开棋盘」（触发行为放到最后的独立实例里测，
         # 因为点击会真的开一局，会污染本实例"未开局"的前置状态）
         assert "open_board" in ctx.composer_tools, ctx.composer_tools
@@ -216,8 +245,12 @@ def main() -> None:
 
         # ---- 静态资源 ----
         status, body = http_get(base)
-        assert status == 200 and "桜のボードゲーム室".encode("utf-8") in body
-        assert b"/api/action" in body
+        assert status == 200 and "桌游室".encode("utf-8") in body
+        # 页面上不该再有日文标题：主标题就是"<当前角色>的桌游室"（换角色后由 applyOpponent 改写）
+        assert "桜のボードゲーム室".encode("utf-8") not in body, "旧的日文主标题应当已经删掉"
+        assert b'/art/lib/board_connection.js' in body
+        status, connection_js = http_get(base + 'art/lib/board_connection.js')
+        assert status == 200 and b'/api/action' in connection_js
         status, body = http_get(base + "state")
         payload = json.loads(body)
         assert payload["game"] is None
@@ -320,6 +353,9 @@ def main() -> None:
             assert "boardgame_" not in line, line
             assert "调用" not in line, line
             assert "action=" not in line, line
+        # 也不许同一句话连着出现两次（status 是 story 的拼接 + 尾巴，两个都追加就会重复）
+        for before, after in zip(payload["log"], payload["log"][1:]):
+            assert before != after, f"对局记录出现重复行：{after}"
 
         # ---- 打法性格：从角色卡推出，并且真的改变她的决策 ----
         service = ctx.tools["boardgame_state"].__self__          # 绑定的处理方法 → 拿到服务对象
@@ -366,9 +402,240 @@ def main() -> None:
         http_post(base + "api/action", {"action": "act_sakura"})
         assert len(ctx.mobile_calls) == before
 
+        # ---- 自动推进（boardgame_auto / 网页的「自动演出」）----
+        # 目的：模型只调一次工具就能让对局真的走一段（它连调几十次是不可靠的）
+        ctx.config.update({"auto_narrate": True})      # 上一节把它关掉了，这里要开着才能验播报
+        before_log = len(json.loads(http_get(base + "state")[1])["log"])
+        before_moves = json.loads(http_get(base + "state")[1])["game"]["move_count"]
+        auto = ctx.tools["boardgame_auto"]({"rounds": 2})
+        assert auto["turns"]["user"] >= 1 and auto["turns"]["sakura"] >= 1, auto["turns"]
+        assert len(auto["story"]) >= 4, auto["story"]
+        assert auto["board_url"].startswith("http://127.0.0.1:")
+        assert "story" in auto and "narration_hint" in auto
+        after = json.loads(http_get(base + "state")[1])
+        assert after["game"]["move_count"] > before_moves, (before_moves, after["game"]["move_count"])
+        assert len(after["log"]) > before_log
+        # 自动推进也会走 mobile 通道让她解说
+        assert ctx.mobile_calls and "自动推进" in ctx.mobile_calls[-1]["text"]
+        # 网页上的「自动演出」走的是同一个方法（不经过模型）
+        status, res = http_post(base + "api/action", {"action": "auto", "arguments": {"rounds": 1}})
+        assert status == 200 and res["ok"] is True and res["story"], res
+        # 对局结束后自动推进会拒绝（不能凭空续命）
+        service._game.winner = "user"
+        try:
+            ctx.tools["boardgame_auto"]({"rounds": 1})
+        except GameError as error:
+            assert "已经结束" in str(error), str(error)
+        else:
+            raise AssertionError("对局结束后不该还能自动推进")
+        service._game.winner = None
+
+        # ---- 玩法说明的图例由插件按主题生成（网页不再写死另一个世界的词）----
+        # 图例跟着"这局用哪套格子"走：这一局是默认的城市图 → 旧格图例
+        legend = json.loads(http_get(base + "state")[1])["legend"]
+        assert set(legend["cells"]) == {"start", "property", "tax", "bonus", "rest",
+                                        "cat", "monster", "train", "navi",
+                                        "device", "gate"}, legend["cells"]
+        assert "¥1400" not in legend["cells"]["start"]        # 工资要用真值
+        assert f"¥{engine_mod.MONOPOLY_PASS_START}" in legend["cells"]["start"], legend["cells"]["start"]
+        assert f"¥{engine_mod.MONOPOLY_TAX}" in legend["cells"]["tax"], legend["cells"]["tax"]
+        # 城市图/随机图不该出现六种新形式的图例词
+        for new_form in ("shop", "coin", "game", "event", "end"):
+            assert new_form not in legend["cells"], (new_form, legend["cells"])
+        assert len(legend["districts"]) == 4 and all(d["color"].startswith("#") for d in legend["districts"])
+        assert legend["naviName"] and legend["themeName"]
+        state_payload = json.loads(http_get(base + "state")[1])
+        assert state_payload["theme"]["naviLog"], state_payload["theme"]
+
+        # ---- 立牌棋子：四个选项（图能取到）、默认金发 + 银白发、两位不能选同一个 ----
+        pieces = json.loads(http_get(base + "state")[1])["pieces"]
+        assert [o["key"] for o in pieces["options"]] == ["sophie", "sakura", "suisen", "katan"], pieces
+        for option in pieces["options"]:
+            assert option["label"], option
+            assert option["url"] == f"/art/chibi/{option['key']}.png", option
+            status, body = http_get(base + option["url"].lstrip("/"))
+            assert status == 200 and body[:4] == b"\x89PNG", option["url"]
+        assert (pieces["user"], pieces["sakura"]) == ("sophie", "sakura"), pieces
+        # 她已经在用银白发，玩家再选银白发要被拒绝
+        _, res = http_post(base + "api/action",
+                           {"action": "set_piece", "arguments": {"player": "user", "key": "sakura"}})
+        assert res["ok"] is False and "同一个" in res["error"], res
+        _, res = http_post(base + "api/action",
+                           {"action": "set_piece", "arguments": {"player": "user", "key": "suisen"}})
+        assert res["ok"] is True, res
+        pieces = json.loads(http_get(base + "state")[1])["pieces"]
+        assert (pieces["user"], pieces["sakura"]) == ("suisen", "sakura"), pieces
+        _, res = http_post(base + "api/action",
+                           {"action": "set_piece", "arguments": {"player": "user", "key": "nope"}})
+        assert res["ok"] is False, res
+        # 换回默认，后面的用例不受影响
+        http_post(base + "api/action",
+                  {"action": "set_piece", "arguments": {"player": "user", "key": "sophie"}})
+
+        # ---- 换成格子棋盘：图例要跟着变成六种新形式（商店/金币/游戏/事件）----
+        ctx.config.update({"map_kind": "grid"})
+        ctx.tools["boardgame_start"]({"game": "monopoly"})
+        legend = json.loads(http_get(base + "state")[1])["legend"]
+        # 格子棋盘上没有"棋盘中央的装置格"了：进塔走**支路上那座传送点**（(12,10)），
+        # 所以图例里是 `tower` 而不是 `device`（用户 2026-09-23 纠正）。
+        assert set(legend["cells"]) == {"start", "end", "property", "shop", "game",
+                                        "coin", "event", "tower", "gate"}, legend["cells"]
+        assert "箭头" in legend["cells"]["start"], legend["cells"]["start"]
+        assert "对勾" in legend["cells"]["property"], legend["cells"]["property"]
+        assert "特殊骰子" in legend["cells"]["shop"], legend["cells"]["shop"]
+        assert f"¥{engine_mod.MONOPOLY_SHOP_DICE_PRICE}" in legend["cells"]["shop"], legend["cells"]["shop"]
+        # 游戏格文案要把当前主题那几件特别事件列出来
+        for event in engine_mod.game_events():
+            assert event["name"] in legend["cells"]["game"], (event["name"], legend["cells"]["game"])
+        for tier in engine_mod.coin_tiers():
+            assert f"¥{tier}" in legend["cells"]["coin"], legend["cells"]["coin"]
+        # 换回城市图，后面的用例还按默认地图走
+        ctx.config.update({"map_kind": "city"})
+        ctx.tools["boardgame_start"]({"game": "monopoly"})
+
+        # ---- 她主动搭话：对局中 + 页面还开着 + 间隔到了，才说一句 ----
+        # （宿主那侧的打补丁与否只影响"这句话会不会变成气泡/语音"，插件这边照发）
+        ctx.config.update({"auto_narrate": True, "proactive_minutes": 5})
+        service._game = None
+        assert service.proactive_tick() is False, "没对局时不该自言自语"
+        ctx.tools["boardgame_start"]({"game": "monopoly"})
+        http_get(base + "state?visible=1&busy=0")                     # 模拟"网页刚刚还开着"
+        service._last_talk = 0.0
+        service._busy_at = 0.0                       # 用户已经闲下来了（不是刚点过）
+        service.note_page_busy(False)
+        before_talk = len(ctx.mobile_calls)
+        assert service.proactive_tick() is True, "对局中 + 页面开着 + 间隔到了，应当主动说一句"
+        assert len(ctx.mobile_calls) == before_talk + 1
+        assert "看一眼棋盘" in ctx.mobile_calls[-1]["text"]
+        # 刚说完就不再打扰
+        assert service.proactive_tick() is False
+        # 页面没人看时不说（闲置超过阈值）
+        service._last_talk = 0.0
+        service._server._last_visible_page = 0.0
+        service._server._touch()
+        assert service.proactive_tick() is False, "服务刚启动/有普通请求不能冒充页面在线"
+        http_get(base + "state")
+        assert service.proactive_tick() is False, "普通状态查询不能冒充可见棋盘"
+        http_get(base + "state?visible=1&busy=0")
+        http_get(base + "state?visible=0&busy=0")
+        assert service.proactive_tick() is False, "隐藏棋盘不能触发主动搭话"
+        service._server._last_visible_page = time.time() - 16
+        assert service.proactive_tick() is False, "关闭/失联后心跳租约过期不得搭话"
+        # 关掉（0 分钟）就彻底不说话
+        http_get(base + "state?visible=1&busy=0")
+        service._last_talk = 0.0
+        ctx.config.update({"proactive_minutes": 0})
+        assert service.proactive_tick() is False
+        # **「对手自动反应」关着时她也要能自己开口**（实测踩过：把那个开关当成了总开关，
+        # 于是用户关了"对操作做反应"，主动搭话也一起消失了）
+        ctx.config.update({"proactive_minutes": 1, "auto_narrate": False})
+        http_get(base + "state?visible=1&busy=0")
+        service._last_talk = 0.0
+        before_talk = len(ctx.mobile_calls)
+        assert service.proactive_tick() is True, "主动搭话不该被「对手自动反应」挡住"
+        assert len(ctx.mobile_calls) == before_talk + 1
+        # 配置里没有这个键时按默认 5 分钟走（不能当成 0=关闭）
+        ctx.config.values.pop("proactive_minutes", None)
+        http_get(base + "state?visible=1&busy=0")
+        service._last_talk = 0.0
+        before_talk = len(ctx.mobile_calls)
+        assert service.proactive_tick() is True, "缺键时应当按默认 5 分钟生效"
+        assert len(ctx.mobile_calls) == before_talk + 1
+        # 定时器随插件 scope 停掉（不留下后台线程）
+        service.stop_proactive()
+        assert service._proactive_thread is None
+        ctx.config.update({"proactive_minutes": 5, "auto_narrate": True})
+
+        # ---- 悔棋：回到上一回合开始前 ----
+        # 先记下"掷骰之前"的样子，再真的掷一次（掷骰前会留一份快照）
+        before_roll = json.loads(http_get(base + "state")[1])
+        moves_before = before_roll["game"]["move_count"]
+        cash_before = dict(before_roll["game"]["cash"])
+        owner_before = [c["owner"] for c in before_roll["game"]["cells"]]
+        turn_now = before_roll["game"]["turn"]
+        ctx.tools["boardgame_roll"]({"player": turn_now})
+        assert json.loads(http_get(base + "state")[1])["canUndo"] is True
+        status, res = http_post(base + "api/action", {"action": "undo"})
+        assert status == 200 and res["ok"] is True, res
+        assert "已退回" in res["status"], res["status"]
+        state_after = json.loads(http_get(base + "state")[1])
+        assert state_after["game"]["cash"] == cash_before, (state_after["game"]["cash"], cash_before)
+        assert [c["owner"] for c in state_after["game"]["cells"]] == owner_before
+        assert state_after["game"]["move_count"] == moves_before, state_after["game"]["move_count"]
+        # 回退也要写进对局记录（玩家看得到发生了什么）
+        assert any("悔棋" in line for line in state_after["log"]), state_after["log"][-3:]
+        # 工具形式同样可用（再走一步造出新快照，然后用工具退）
+        turn_now = json.loads(http_get(base + "state")[1])["game"]["turn"]
+        ctx.tools["boardgame_roll"]({"player": turn_now})
+        tool_undo = ctx.tools["boardgame_undo"]({})
+        assert "已退回" in tool_undo["status"], tool_undo
+        service._snapshots.clear()
+        try:
+            ctx.tools["boardgame_undo"]({})
+        except GameError as error:
+            assert "没有可回退" in str(error), str(error)
+        else:
+            raise AssertionError("没有快照时应当报错")
+
+        # ---- 礼貌规则：用户刚操作过 / 页面开着弹窗时，她不该插嘴 ----
+        ctx.config.update({"proactive_minutes": 1, "auto_narrate": True})
+        http_get(base + "state?visible=1&busy=0")
+        service._last_talk = 0.0
+        service._busy_at = time.time()                 # 刚点过棋盘
+        assert service.proactive_tick() is False, "用户刚操作过就别说话"
+        service._busy_at = 0.0
+        service.note_page_busy(True)                   # 弹窗开着（骰子/事件卡）
+        assert service.proactive_tick() is False, "页面上正开着弹窗就别说话"
+        service.note_page_busy(False)
+        service._last_talk = 0.0
+        assert service.proactive_tick() is True, "都闲下来了就该能说话"
+        ctx.config.update({"proactive_minutes": 0})
+
+        # ---- 自动模式 + 判断理由写进记录（自动下棋时解说才有据可依）----
+        mode_status, mode_res = http_post(base + "api/action",
+                                          {"action": "set_auto_mode", "arguments": {"mode": "hers"}})
+        assert mode_res["ok"] is True and "自动模式" in mode_res["status"], mode_res
+        assert json.loads(http_get(base + "state")[1])["autoMode"] == "hers"
+        status, res = http_post(base + "api/action", {"action": "set_auto_mode",
+                                                     "arguments": {"mode": "nope"}})
+        assert res["ok"] is False and "off" in res["error"], res
+        http_post(base + "api/action", {"action": "set_auto_mode", "arguments": {"mode": "off"}})
+        # 让她的回合自动走完，记录里必须出现"她的判断：…"
+        ctx.tools["boardgame_start"]({"game": "monopoly"})
+        game = service._game
+        for _ in range(40):                      # 推到出现一次买地/升级/选路决策
+            if game.pending and game.pending["player"] == "sakura":
+                break
+            if game.winner:
+                break
+            try:
+                if game.pending:
+                    ctx.tools["boardgame_decide"]({"action": "skip"})
+                else:
+                    ctx.tools["boardgame_roll"]({"player": game.turn})
+            except GameError:
+                break
+        if game.pending and game.pending["player"] == "sakura":
+            ctx.tools["boardgame_auto"]({"rounds": 1})
+            notes = [line for line in service._log if line.startswith("她的判断：")]
+            assert notes, list(service._log)[-5:]
+            assert "现金" in notes[-1] or "支街" in notes[-1] or "主环" in notes[-1], notes[-1]
+
+        # ---- 棋风：默认跟随角色卡（和大富翁打法性格同源），手动点了才用手动值 ----
+        state_now = json.loads(http_get(base + "state")[1])
+        assert state_now["styleFollowCard"] is True, state_now.get("styleFollowCard")
+        derived = service._persona["gomoku"]["aggression"]     # 五子棋棋风也是从角色卡推的
+        assert state_now["style"] == derived, (state_now["style"], derived)
+        assert "角色卡" in state_now["styleNote"], state_now["styleNote"]
+        # 手动改一下：切到手动，并且用回手动值
+        ctx.config.update({"gomoku_style_follow_card": False, "gomoku_style": 88})
+        state_manual = json.loads(http_get(base + "state")[1])
+        assert state_manual["styleFollowCard"] is False and state_manual["style"] == 88, state_manual
+        ctx.config.update({"gomoku_style_follow_card": True})
+
         # ---- 非法操作被拒绝且不影响状态 ----
         status, res = http_post(base + "api/action", {"action": "start", "arguments": {"game": "race"}})
-        assert status == 200 and res["ok"] is False and "不支持" in res["error"]
+        assert status == 400 and res["ok"] is False and "不支持" in res["error"]
         status, res = http_post(base + "api/action", {"action": "nope"})
         assert res["ok"] is False
         status, res = http_post(base + "api/action", {"action": "set_difficulty", "arguments": {"level": 9}})
@@ -378,11 +645,22 @@ def main() -> None:
         fragment = builder({})
         assert fragment and "【进行中的对局】" in fragment[0]["content"]
         assert "最近动态" in fragment[0]["content"]
+        # 桌游引导：以前要用户手动粘进每个角色的角色卡，现在插件自己注入
+        # （当前是大富翁，所以五子棋那几行必须被筛掉，标记本身也不该留在正文里）
+        fragment_text = fragment[0]["content"]
+        assert "【桌游引导】" in fragment_text, fragment_text[:200]
+        assert "【处世态度】" in fragment_text, fragment_text[:200]
+        assert "【落子】" not in fragment_text, "五子棋的行不该出现在大富翁的上下文里"
+        assert "[大富翁]" not in fragment_text and "[五子棋]" not in fragment_text, fragment_text[:200]
+        assert service._guide_source == "内置通用版", service._guide_source
 
         # ---- 五子棋：先后手骰 + 网页点击落子 + AI 代算 + 难度切换 ----
         status, res = http_post(base + "api/action", {"action": "start", "arguments": {"game": "gomoku"}})
         assert res["ok"] is True
         assert "先后手骰" in res["status"], res["status"]
+        # 换成五子棋后，引导里只剩五子棋那一档
+        gomoku_fragment = builder({})[0]["content"]
+        assert "【落子】" in gomoku_fragment and "【处世态度】" not in gomoku_fragment, gomoku_fragment[:300]
         payload = json.loads(http_get(base + "state")[1])
         game = payload["game"]
         rolls = game["first_rolls"]
@@ -466,6 +744,56 @@ def main() -> None:
         rolled = ctx_char.tools["boardgame_roll"]({"player": "user"})
         assert "夜乃樱" not in rolled["status"], rolled["status"]
 
+        # 换角色后这些曾经写死在插件里的地方也要跟着换（对局记录、状态文案、报错文案）
+        gomoku_start = ctx_char.tools["boardgame_start"]({"game": "gomoku"})
+        assert FakeContext.TEST_DISPLAY_NAME in gomoku_start["status"], gomoku_start["status"]
+        assert "夜乃樱" not in gomoku_start["status"], gomoku_start["status"]
+        char_log = json.loads(http_get(char_base + "state")[1])["log"]
+        assert char_log and all("夜乃樱" not in line for line in char_log), char_log
+        status, res = http_post(char_base + "api/action", {"action": "set_style", "arguments": {"style": 70}})
+        assert res["ok"] is True and "夜乃樱" not in res["status"], res
+        assert "手动" in res["status"], res
+        assert json.loads(http_get(char_base + "state")[1])["styleFollowCard"] is False
+        try:
+            ctx_char.tools["boardgame_place"]({"player": "user"})
+        except GameError as error:
+            assert "夜乃樱" not in str(error), str(error)
+            assert FakeContext.TEST_DISPLAY_NAME in str(error), str(error)
+        else:
+            raise AssertionError("玩家不给坐标应当报错")
+
+        # ---- 桌游引导可定制：角色专属文件 > 数据目录默认 > 内置通用版 ----
+        guide_root = pathlib.Path(tmp) / "data_guide"
+        (guide_root / "guides").mkdir(parents=True, exist_ok=True)
+        (guide_root / "guides" / "default.md").write_text("数据目录里的默认引导。", encoding="utf-8")
+        (guide_root / "guides" / f"{FakeContext.TEST_CHARACTER_ID}.md").write_text(
+            "水仙专属引导。\n[大富翁]只在下大富翁时说的话。\n[五子棋]只在下五子棋时说的话。",
+            encoding="utf-8")
+        ctx_guide = FakeContext(guide_root, character_package=pkg)
+        plugin_module.BoardgamePlugin().setup(ctx_guide)
+        service_guide = ctx_guide.tools["boardgame_state"].__self__
+        assert service_guide._guide_source.startswith("角色专属"), service_guide._guide_source
+        assert service_guide.guide_text("monopoly") == "水仙专属引导。\n只在下大富翁时说的话。", \
+            service_guide.guide_text("monopoly")
+        assert service_guide.guide_text("gomoku") == "水仙专属引导。\n只在下五子棋时说的话。", \
+            service_guide.guide_text("gomoku")
+        ctx_guide.tools["boardgame_start"]({"game": "monopoly"})
+        guide_fragment = ctx_guide.context_contributions[0][1]({})[0]["content"]
+        assert "水仙专属引导" in guide_fragment and "只在下大富翁时说的话" in guide_fragment, guide_fragment[:300]
+        assert "只在下五子棋时说的话" not in guide_fragment
+        ctx_guide.teardown()
+
+        # 没有角色专属文件时用数据目录里的 guides/default.md（角色 id 仍然解析得到，只是没那份文件）
+        guide_root2 = pathlib.Path(tmp) / "data_guide_default"
+        (guide_root2 / "guides").mkdir(parents=True, exist_ok=True)
+        (guide_root2 / "guides" / "default.md").write_text("数据目录里的默认引导。", encoding="utf-8")
+        ctx_guide2 = FakeContext(guide_root2, character_package=pkg)
+        plugin_module.BoardgamePlugin().setup(ctx_guide2)
+        service_guide2 = ctx_guide2.tools["boardgame_state"].__self__
+        assert service_guide2._guide_source == "数据目录里的 guides/default.md", service_guide2._guide_source
+        assert service_guide2.guide_text("monopoly") == "数据目录里的默认引导。"
+        ctx_guide2.teardown()
+
         # 没有角色包时退回默认（夜乃樱 + 插件自带立绘）
         ctx_plain = FakeContext(pathlib.Path(tmp) / "data_char_plain")
         plugin_module.BoardgamePlugin().setup(ctx_plain)
@@ -512,8 +840,9 @@ def main() -> None:
         all_ctx = [ctx, ctx2, ctx3, ctx4, ctx5, ctx6]
         for c in all_ctx:
             c.teardown()
-        for url in urls:
-            assert http_get(url, expect_error=True)[0] is None, "服务器应在 teardown 后关闭"
+        for index, url in enumerate(urls):
+            status_after = http_get(url, expect_error=True)[0]
+            assert status_after is None, f"服务器应在 teardown 后关闭：第 {index} 个实例 {url}"
 
     print("PLUGIN SMOKE TEST PASSED")
 

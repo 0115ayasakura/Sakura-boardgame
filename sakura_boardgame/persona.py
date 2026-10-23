@@ -65,6 +65,62 @@ def policy_from(traits: dict[str, float]) -> dict[str, float]:
     }
 
 
+def gomoku_aggression(traits: dict[str, Any]) -> int:
+    """（旧接口，保留兼容）同一张角色卡推出五子棋的进攻倾向（0–100）。
+
+    只用大富翁那四个倾向推出来的值区分度很低（长卡会把倾向全刷满，谁都贴着中间值），
+    所以实际用的是下面 `gomoku_style()` 的专用词表。
+    """
+    ambition = float(traits.get("ambition") or 0.5)
+    caution = float(traits.get("caution") or 0.5)
+    kindness = float(traits.get("kindness") or 0.5)
+    value = 0.45 + 0.50 * ambition - 0.40 * caution - 0.15 * kindness
+    return int(round(max(0.05, min(0.95, value)) * 100))
+
+
+# 五子棋的"进攻 / 稳健"用**单独一套词**打分：挑的是"下棋风格"的词。
+# 用大富翁那四个倾向（冷静/好胜/好奇/温柔）推的话，两万字的卡四项全在 0.75 以上，
+# 谁推出来都是 41–42，等于没有区分（实测过三张卡：夜乃樱/水仙/初月全是 41–42）。
+GOMOKU_TRAITS: dict[str, dict[str, float]] = {
+    "attack": {
+        "好胜": 1.0, "不服输": 1.0, "胜负欲": 1.0, "要强": 0.9, "进攻": 1.1, "主动出击": 1.0,
+        "抢": 0.8, "宣示主权": 0.8, "胜利": 0.8, "赢了": 0.6, "MVP": 0.9, "第一名": 0.9,
+        "不会让": 1.0, "杀气": 1.1, "凶狠": 1.1, "做杀": 1.0, "寸步不让": 1.1, "志在必得": 1.0,
+    },
+    "guard": {
+        "冷静": 0.8, "克制": 0.8, "谨慎": 1.0, "掂量": 0.8, "稳健": 1.0, "守": 0.9,
+        "拆招": 1.1, "让着": 0.9, "手下留情": 1.1, "温柔": 0.5, "体贴": 0.5, "谦让": 1.0,
+        "不冒进": 1.1, "保守": 1.0, "低调": 0.7, "耐心": 0.8, "防守": 1.0, "退一步": 0.9,
+    },
+}
+
+
+def score_gomoku(text: str) -> dict[str, float]:
+    """按五子棋专用词表打分（同一套饱和公式，见 score()）。"""
+    saturate = max(3.0, len(text) / 4000.0)
+    out: dict[str, float] = {}
+    for trait, words in GOMOKU_TRAITS.items():
+        total = 0.0
+        for word, weight in words.items():
+            hits = len(re.findall(re.escape(word), text))
+            if hits:
+                total += weight * min(hits, _WORD_CAP)
+        total = max(0.0, total)
+        out[trait] = round(total / (total + saturate), 3) if total else 0.0
+    return out
+
+
+def gomoku_style(card_text: str) -> dict[str, Any]:
+    """从角色卡推五子棋棋风：进攻倾向 0–100 ＋ 依据（给设置页与日志看）。"""
+    text = trim(card_text or "")
+    values = score_gomoku(text) if text.strip() else {"attack": 0.0, "guard": 0.0}
+    attack, guard = values["attack"], values["guard"]
+    aggression = int(round(max(0.05, min(0.95, 0.5 + 0.9 * (attack - guard))) * 100))
+    basis = (f"进攻词 {attack:.2f} / 稳健词 {guard:.2f}"
+             if (attack or guard) else "卡里没找到明显的棋风词")
+    return {"aggression": aggression, "attack": attack, "guard": guard, "basis": basis}
+
+
 DEFAULT_TRAITS = {"caution": 0.55, "ambition": 0.5, "curiosity": 0.35, "kindness": 0.5}
 # 设置项里手动指定性格时的预设
 PRESETS: dict[str, dict[str, float]] = {
@@ -146,16 +202,19 @@ def read_card(context: Any) -> str:
 
 
 def build(context: Any, preset: str = "card") -> dict[str, Any]:
-    """返回 {traits, policy, text(给模型看的描述), source}。"""
+    """返回 {traits, policy, text(给模型看的描述), source, gomoku(棋风)}。"""
     if preset in PRESETS:
         traits = dict(PRESETS[preset])
         return {"traits": traits, "policy": policy_from(traits),
-                "text": describe(traits, policy_from(traits)), "source": f"预设：{STYLE_LABEL.get(preset, preset)}"}
+                "text": describe(traits, policy_from(traits)),
+                "source": f"预设：{STYLE_LABEL.get(preset, preset)}",
+                "gomoku": gomoku_style("")}
     card = read_card(context)
     traits = analyze(card)
     policy = policy_from(traits)
     source = "角色卡" if card.strip() else "默认（没读到角色卡）"
-    return {"traits": traits, "policy": policy, "text": describe(traits, policy), "source": source}
+    return {"traits": traits, "policy": policy, "text": describe(traits, policy), "source": source,
+            "gomoku": gomoku_style(card)}
 
 
 # ---- 当前角色的"身份"：显示名 + 立绘 ----
