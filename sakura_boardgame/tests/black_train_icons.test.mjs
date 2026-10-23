@@ -125,7 +125,7 @@ test('missing glyphs are synthesized once per authoritative cell, including towe
 // Read the real shipped binary, not guessed object names or a mocked gate.
 // Decode uncompressed GLB attributes directly; no browser, image decoder or server.
 async function realGLB(){
- const bytes=await readFile(new URL('../../boardgame_design/black_gold_final/station_black_gold.glb',import.meta.url));
+ const bytes=await readFile(new URL('../art/black_train/station_black_gold.glb',import.meta.url));
  assert.equal(bytes.toString('ascii',0,4),'glTF');
  const length=bytes.readUInt32LE(12),doc=JSON.parse(bytes.toString('utf8',20,20+length));
  const bin=20+length+8,types={5126:Float32Array,5125:Uint32Array,5123:Uint16Array,5121:Uint8Array},sizes={SCALAR:1,VEC2:2,VEC3:3,VEC4:4};
