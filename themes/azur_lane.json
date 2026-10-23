@@ -1,0 +1,809 @@
+{
+  "id": "azur_lane",
+  "name": "港区（碧蓝航线）",
+  "description": "给《碧蓝航线》的角色用的主题：重樱泊地、军港前街、宿舍区、废弃船坞。初月的角色包（id=chuyue）会自动选中它。",
+  "characters": [
+    "chuyue"
+  ],
+  "start_name": "指挥室前・起点",
+  "navi_log_prefix": "指挥部通报",
+  "districts": {
+    "gakuen": {
+      "label": "重樱泊地",
+      "color": "#c25b83"
+    },
+    "shopping": {
+      "label": "军港前街",
+      "color": "#4a8bc9"
+    },
+    "daily": {
+      "label": "宿舍区",
+      "color": "#3f9e83"
+    },
+    "taboo": {
+      "label": "废弃船坞",
+      "color": "#5a5f7a"
+    }
+  },
+  "properties": {
+    "gakuen": [
+      [
+        "office",
+        "指挥室",
+        1,
+        "poi-gate"
+      ],
+      [
+        "secretary",
+        "秘书舰办公室",
+        2,
+        "poi-council"
+      ],
+      [
+        "shrine",
+        "重樱神社",
+        2,
+        "poi-cathedral"
+      ],
+      [
+        "dorm",
+        "舰娘宿舍",
+        2,
+        "poi-sakura_flat"
+      ],
+      [
+        "onsen",
+        "港区温泉",
+        3,
+        "poi-sento"
+      ],
+      [
+        "signal",
+        "信号塔",
+        3,
+        "poi-tower"
+      ],
+      [
+        "dojo",
+        "剑术场",
+        3,
+        "poi-dojo"
+      ],
+      [
+        "pool",
+        "港区泳池",
+        1,
+        "poi-pool"
+      ],
+      [
+        "library",
+        "档案室",
+        1,
+        "poi-mutelib"
+      ]
+    ],
+    "shopping": [
+      [
+        "canteen",
+        "军港食堂",
+        1,
+        "poi-family"
+      ],
+      [
+        "bookstore",
+        "旧书店",
+        2,
+        "poi-bookstore"
+      ],
+      [
+        "eagle",
+        "白鹰街区",
+        2,
+        "poi-british"
+      ],
+      [
+        "arcade",
+        "游戏中心",
+        2,
+        "poi-arcade"
+      ],
+      [
+        "viewdeck",
+        "观舰台",
+        3,
+        "poi-tower2"
+      ],
+      [
+        "inn",
+        "军人旅馆",
+        3,
+        "poi-hotel"
+      ],
+      [
+        "conveni",
+        "港区便利店",
+        1,
+        "poi-conveni"
+      ],
+      [
+        "bakery",
+        "面包店",
+        2,
+        "poi-bakery"
+      ]
+    ],
+    "daily": [
+      [
+        "chuyue_room",
+        "初月的房间",
+        1,
+        "poi-sakura_flat"
+      ],
+      [
+        "commander_room",
+        "指挥官的房间",
+        2,
+        "poi-user_flat"
+      ],
+      [
+        "park",
+        "港区公园",
+        1,
+        "poi-park"
+      ],
+      [
+        "stray",
+        "野猫据点",
+        1,
+        "poi-catspot"
+      ],
+      [
+        "breakwater_walk",
+        "防波堤步道",
+        2,
+        "poi-seaside"
+      ],
+      [
+        "bath",
+        "公共浴室",
+        2,
+        "poi-sento"
+      ],
+      [
+        "bench",
+        "堤边长椅",
+        1,
+        "poi-bench"
+      ],
+      [
+        "depot",
+        "补给仓库",
+        2,
+        "poi-shelter"
+      ],
+      [
+        "garden",
+        "宿舍花坛",
+        1,
+        "poi-park"
+      ]
+    ],
+    "taboo": [
+      [
+        "wall",
+        "防波堤巨墙",
+        2,
+        "poi-wall"
+      ],
+      [
+        "drydock",
+        "废弃干船坞",
+        3,
+        "poi-subway"
+      ],
+      [
+        "drain",
+        "排水口",
+        2,
+        "poi-manhole"
+      ],
+      [
+        "hulk",
+        "锈蚀的船骸",
+        3,
+        "poi-station"
+      ],
+      [
+        "salvage",
+        "打捞事务所",
+        3,
+        "poi-houzuki"
+      ],
+      [
+        "outpost",
+        "旧哨所",
+        2,
+        "poi-garrison"
+      ],
+      [
+        "clinic",
+        "废弃医务室",
+        3,
+        "poi-hospital"
+      ],
+      [
+        "shelter",
+        "防空洞",
+        2,
+        "poi-shelter"
+      ],
+      [
+        "alley",
+        "船坞后巷",
+        2,
+        "poi-alley"
+      ]
+    ]
+  },
+  "specials": {
+    "rest": "港区日常",
+    "tax": "军费征收",
+    "bonus": "舰队补给"
+  },
+  "special_names": {
+    "navi": "指挥部通报",
+    "cat": "港区的野猫",
+    "monster": "塞壬伏击",
+    "train": "沉没的泊位",
+    "device": "港区指挥塔"
+  },
+  "special_cycle": [
+    [
+      "rest",
+      "港区日常",
+      "badge-rest"
+    ],
+    [
+      "navi",
+      "指挥部通报",
+      "badge-navi"
+    ],
+    [
+      "rest",
+      "港区日常",
+      "badge-rest"
+    ],
+    [
+      "rest",
+      "港区日常",
+      "badge-rest"
+    ],
+    [
+      "navi",
+      "指挥部通报",
+      "badge-navi"
+    ],
+    [
+      "rest",
+      "港区中央广场",
+      "badge-rest"
+    ],
+    [
+      "bonus",
+      "舰队补给",
+      "badge-bonus"
+    ],
+    [
+      "rest",
+      "港区日常",
+      "badge-rest"
+    ],
+    [
+      "navi",
+      "指挥部通报",
+      "badge-navi"
+    ],
+    [
+      "tax",
+      "军费征收",
+      "badge-tax"
+    ],
+    [
+      "rest",
+      "港区日常",
+      "badge-rest"
+    ],
+    [
+      "navi",
+      "指挥部通报",
+      "badge-navi"
+    ],
+    [
+      "rest",
+      "港区日常",
+      "badge-rest"
+    ],
+    [
+      "cat",
+      "港区的野猫",
+      "badge-cat"
+    ],
+    [
+      "rest",
+      "港区日常",
+      "badge-rest"
+    ],
+    [
+      "navi",
+      "指挥部通报",
+      "badge-navi"
+    ],
+    [
+      "bonus",
+      "舰队补给",
+      "badge-bonus"
+    ],
+    [
+      "rest",
+      "港区日常",
+      "badge-rest"
+    ],
+    [
+      "tax",
+      "军费征收",
+      "badge-tax"
+    ],
+    [
+      "navi",
+      "指挥部通报",
+      "badge-navi"
+    ],
+    [
+      "rest",
+      "港区日常",
+      "badge-rest"
+    ],
+    [
+      "monster",
+      "塞壬伏击",
+      "badge-monster"
+    ],
+    [
+      "rest",
+      "港区日常",
+      "badge-rest"
+    ],
+    [
+      "train",
+      "沉没的泊位",
+      "badge-train"
+    ],
+    [
+      "rest",
+      "港区日常",
+      "badge-rest"
+    ],
+    [
+      "navi",
+      "指挥部通报",
+      "badge-navi"
+    ],
+    [
+      "rest",
+      "港区日常",
+      "badge-rest"
+    ],
+    [
+      "rest",
+      "港区日常",
+      "badge-rest"
+    ]
+  ],
+  "token_district": {
+    "train": "gakuen",
+    "cat": "daily",
+    "monster": "taboo"
+  },
+  "groups": {
+    "shopping": {
+      "label": "军港前街",
+      "color": "#4a8bc9"
+    },
+    "gakuen": {
+      "label": "重樱泊地",
+      "color": "#c25b83"
+    },
+    "daily": {
+      "label": "宿舍区",
+      "color": "#3f9e83"
+    },
+    "taboo": {
+      "label": "废弃船坞",
+      "color": "#5a5f7a"
+    }
+  },
+  "group_names": {
+    "shopping": [
+      "军港食堂",
+      "港区便利店",
+      "游戏中心",
+      "军人旅馆"
+    ],
+    "gakuen": [
+      "指挥室",
+      "秘书舰办公室",
+      "重樱神社",
+      "档案室"
+    ],
+    "daily": [
+      "初月的房间",
+      "指挥官的房间",
+      "港区公园",
+      "野猫据点"
+    ],
+    "taboo": [
+      "防波堤巨墙",
+      "废弃干船坞",
+      "排水口",
+      "锈蚀的船骸"
+    ]
+  },
+  "group_tiers": {
+    "shopping": [
+      1,
+      1,
+      2,
+      2
+    ],
+    "gakuen": [
+      1,
+      2,
+      2,
+      3
+    ],
+    "daily": [
+      1,
+      1,
+      1,
+      2
+    ],
+    "taboo": [
+      2,
+      3,
+      3,
+      3
+    ]
+  },
+  "poi_icons": {
+    "指挥室": "poi-gate",
+    "秘书舰办公室": "poi-council",
+    "重樱神社": "poi-cathedral",
+    "港区温泉": "poi-sento",
+    "舰娘宿舍": "poi-sakura_flat",
+    "档案室": "poi-mutelib",
+    "剑术场": "poi-dojo",
+    "港区泳池": "poi-pool",
+    "信号塔": "poi-tower",
+    "军港食堂": "poi-family",
+    "港区便利店": "poi-conveni",
+    "旧书店": "poi-bookstore",
+    "白鹰街区": "poi-british",
+    "游戏中心": "poi-arcade",
+    "军人旅馆": "poi-hotel",
+    "观舰台": "poi-tower2",
+    "面包店": "poi-bakery",
+    "初月的房间": "poi-sakura_flat",
+    "指挥官的房间": "poi-user_flat",
+    "港区公园": "poi-park",
+    "野猫据点": "poi-catspot",
+    "防波堤步道": "poi-seaside",
+    "堤边长椅": "poi-bench",
+    "公共浴室": "poi-sento",
+    "宿舍花坛": "poi-park",
+    "补给仓库": "poi-shelter",
+    "防波堤巨墙": "poi-wall",
+    "废弃干船坞": "poi-subway",
+    "排水口": "poi-manhole",
+    "锈蚀的船骸": "poi-station",
+    "废弃医务室": "poi-hospital",
+    "防空洞": "poi-shelter",
+    "船坞后巷": "poi-alley",
+    "旧哨所": "poi-garrison",
+    "打捞事务所": "poi-houzuki"
+  },
+  "bank_name": "指挥部的会计科",
+  "flag_cards": {
+    "rent_free": "演习暂停",
+    "salary_next": "沉眠的运输舰"
+  },
+  "story": {
+    "cat": "在防波堤上蹲下来，花 ¥{cost} 买了猫粮——这次它没有躲开（+¥{gain}）。",
+    "cat_broke": "路过那只野猫，想喂它却连猫粮钱都掏不出来……只能远远看一眼。",
+    "monster": "「{name}」从海雾里钻出来！{opponent}抢先一步挡在前面——但挨的那一发修理费跑不掉（-¥{toll}）。",
+    "train": "「{name}」在水下亮起灯，生锈的缆绳自己松开了——这是过路费（-¥{toll}）。",
+    "tax": "踩到{name}，缴税 ¥{paid}。",
+    "bonus": "领到{name}，+¥{amount}。",
+    "rent_free": "踩到 {owner}的「{cell}」，租金 ¥{rent}——但{payer}发动『{free_card}』把账单停住了，免租！",
+    "salary_double": "经过起点，领工资 +¥{salary}（打捞到的心智魔方让工资翻了倍）。",
+    "mortgage_bank": "把「{cell}」抵押给了{bank}，回收 ¥{gain}（抵押期间不收租）。",
+    "mortgage_forced": "抵押「{cell}」，回收 ¥{gain}。"
+  },
+  "event_cards": [
+    {
+      "title": "三菜军舰便当",
+      "flavor": "重樱食堂的招牌，一个驱逐舰装得下三份配菜，也装得下给你留的那一份。",
+      "effect": {
+        "type": "cash",
+        "amount": 150
+      }
+    },
+    {
+      "title": "芝士焗薯条",
+      "flavor": "被塞了一整盘。吃完才承认，自己是喜欢芝士的。",
+      "effect": {
+        "type": "cash",
+        "amount": 120
+      }
+    },
+    {
+      "title": "才艺表演：膝枕体验券",
+      "flavor": "被起哄着表演才艺，索性把膝盖借出去一小时，居然还收了钱。",
+      "effect": {
+        "type": "cash",
+        "amount": 100
+      }
+    },
+    {
+      "title": "好感度排行榜第二",
+      "flavor": "又是第二。回家路上买了一罐宣言可乐冷静了一下。",
+      "effect": {
+        "type": "cash",
+        "amount": -140
+      }
+    },
+    {
+      "title": "初月藏的私房钱",
+      "flavor": "从抽屉最深处翻出一叠零钱，还有一张字条：「随便拿去用啦♪」",
+      "effect": {
+        "type": "cash",
+        "amount": 150
+      }
+    },
+    {
+      "title": "港区的怪谈之夜",
+      "flavor": "值夜时听见船坞那边有声音——第二天顶着黑眼圈去买护身符。",
+      "effect": {
+        "type": "cash",
+        "amount": -160
+      }
+    },
+    {
+      "title": "旧船坞的遗物",
+      "flavor": "锈蚀的舱门后面供着什么，谁也不敢细看。投一枚硬币当香火钱。",
+      "effect": {
+        "type": "cash",
+        "amount": -130
+      }
+    },
+    {
+      "title": "排水口探险",
+      "flavor": "排水口编号 C-1426。沿着管道走到底，捞上来一件还能用的零件。",
+      "effect": {
+        "type": "cash",
+        "amount": 200
+      }
+    },
+    {
+      "title": "演习场的机动奖励",
+      "flavor": "贴着弹幕走完了一整轮演习，领到一笔没人争的机动奖金。",
+      "effect": {
+        "type": "cash",
+        "amount": 100
+      }
+    },
+    {
+      "title": "指挥部的体检提醒",
+      "flavor": "秘书舰在终端上弹出提醒：体检套餐的截止日就是今天。",
+      "effect": {
+        "type": "cash",
+        "amount": -130
+      }
+    },
+    {
+      "title": "港区包场KTV",
+      "flavor": "把整间包厢包了下来，唱到嗓子哑。最后所有人合唱了那首军歌。",
+      "effect": {
+        "type": "cash",
+        "amount": 180
+      }
+    },
+    {
+      "title": "塞壬警报",
+      "flavor": "海面下的反应突然上升，全港区进掩体。应急采购花掉不少。",
+      "effect": {
+        "type": "cash",
+        "amount": -150
+      }
+    },
+    {
+      "title": "重樱补给配额",
+      "flavor": "本季配额批下来了，附言只有四个字：「好好休整」。",
+      "effect": {
+        "type": "cash",
+        "amount": 250
+      }
+    },
+    {
+      "title": "秘书舰加班费",
+      "flavor": "替指挥官把一整个星期的文件整理完，账面上多出一笔加班费。",
+      "effect": {
+        "type": "cash",
+        "amount": 130
+      }
+    },
+    {
+      "title": "港区野猫的祝福",
+      "flavor": "第 215 次尝试之后，防波堤上那只灰猫终于让人摸了头。下次掷骰 +1。",
+      "effect": {
+        "type": "dice_bonus",
+        "bonus": 1
+      }
+    },
+    {
+      "title": "演习暂停",
+      "flavor": "「这段时间先停一停吧，账单的事我记下了」——海面安静下来，一笔租金免了。",
+      "effect": {
+        "type": "rent_free"
+      }
+    },
+    {
+      "title": "沉眠的运输舰",
+      "flavor": "在旧泊位边捞到一枚还亮着的心智魔方。下次经过起点，工资翻倍。",
+      "effect": {
+        "type": "salary_next"
+      }
+    },
+    {
+      "title": "沉没的泊位",
+      "flavor": "梦见水漫过脚踝，锈蚀的船骸在雾里靠岸。醒来时已经站在起点。",
+      "effect": {
+        "type": "goto_start"
+      }
+    },
+    {
+      "title": "舰队募捐",
+      "flavor": "以重樱的名义向在场所有人收了一次募捐。",
+      "effect": {
+        "type": "collect_each",
+        "amount": 100
+      }
+    },
+    {
+      "title": "泊地修缮费",
+      "flavor": "防波堤要修，钱得大家摊。",
+      "effect": {
+        "type": "pay_each",
+        "amount": 100
+      }
+    },
+    {
+      "title": "幸运舰的余裕",
+      "flavor": "被卷进塞壬的接触战却毫发无伤，事后领到一笔观测协作津贴。",
+      "effect": {
+        "type": "cash",
+        "amount": 160
+      }
+    },
+    {
+      "title": "打捞上来的数据核心",
+      "flavor": "从报废的观测机里拆出一块还能读的核心，顺手卖了。",
+      "effect": {
+        "type": "cash",
+        "amount": 110
+      }
+    },
+    {
+      "title": "宵禁六点",
+      "flavor": "「玩到几点了。」——迟到罚站，零花钱被扣。",
+      "effect": {
+        "type": "cash",
+        "amount": -120
+      }
+    },
+    {
+      "title": "周末的约会",
+      "flavor": "「太疯跑的话，回来的路会很长哦」——但花掉的每一分都值得。",
+      "effect": {
+        "type": "cash",
+        "amount": -80
+      }
+    },
+    {
+      "title": "食堂阿姨的偏爱",
+      "flavor": "「今天给你多盛一勺。」——多了这一勺，一整天都是满的。",
+      "effect": {
+        "type": "cash",
+        "amount": 90
+      }
+    },
+    {
+      "title": "心智魔方的共鸣",
+      "flavor": "魔方与海面下的什么同频了一瞬。回过神来，账上多了一笔谁也说不清来源的钱。",
+      "effect": {
+        "type": "cash",
+        "amount": 800
+      },
+      "weight": 2,
+      "rare": true
+    },
+    {
+      "title": "塞壬的警笛",
+      "flavor": "警报毫无预兆地拉响，整片海面都在震。回过神来，钱包和理智都空了一半。",
+      "effect": {
+        "type": "cash",
+        "amount": -620
+      },
+      "weight": 2,
+      "rare": true
+    }
+  ],
+  "cell_forms": {
+    "start": "港区入口",
+    "end": "终点",
+    "property": "地产",
+    "shop": "补给站",
+    "game": "演习",
+    "coin": "补给箱",
+    "event": "通报"
+  },
+  "coin_tiers": [
+    100,
+    200,
+    300
+  ],
+  "shop_items": {
+    "dice_label": "指挥骰",
+    "dice_note": "买一个，下一次掷骰自选点数",
+    "gain_label": "军费加成",
+    "gain_note": "接下来 3 回合收入 ×1.5",
+    "loss_label": "节约令",
+    "loss_note": "接下来 3 回合支出 ×0.5"
+  },
+  "game_events": [
+    {
+      "key": "tax",
+      "name": "军费征收",
+      "story": "「{name}」的传票送到了手上。",
+      "win": "账目核对无误，这次不用补缴。",
+      "lose": "按条例补缴 ¥{amount}。"
+    },
+    {
+      "key": "bonus",
+      "name": "舰队补给",
+      "story": "「{name}」的补给单批下来了。",
+      "win": "补给到手，+¥{amount}。",
+      "lose": "这批补给被别的舰队先领走了。"
+    },
+    {
+      "key": "cat",
+      "name": "港区的野猫",
+      "story": "「{name}」蹲在缆桩上看着你。",
+      "win": "它领你去看了它藏罐头的地方（+¥{amount}）。",
+      "lose": "它叼走罐头就跑（-¥{amount}）。"
+    },
+    {
+      "key": "monster",
+      "name": "塞壬伏击",
+      "story": "「{name}」从海雾里压了过来。",
+      "win": "你抢在它合围前冲了出去，它没有追。",
+      "lose": "一发擦过舰装，维修费 ¥{amount}。"
+    },
+    {
+      "key": "train",
+      "name": "沉没的泊位",
+      "story": "「{name}」的水面下浮起了锚链。",
+      "win": "你绕开了锚链，泊位安静下来。",
+      "lose": "锚链缠住了螺旋桨，修理 ¥{amount}。"
+    }
+  ]
+}

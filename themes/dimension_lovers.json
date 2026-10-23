@@ -1,0 +1,787 @@
+{
+  "id": "dimension_lovers",
+  "name": "第二横滨市",
+  "description": "《ディメンション凸ラバース!!》的第二横滨市：学园、街市、住宅区、荒废街区。",
+  "characters": [],
+  "start_name": "学园前・起点",
+  "districts": {
+    "gakuen": {
+      "label": "学园区",
+      "color": "#4a8bc9"
+    },
+    "shopping": {
+      "label": "街市",
+      "color": "#d95a72"
+    },
+    "daily": {
+      "label": "住宅区",
+      "color": "#3f9e83"
+    },
+    "taboo": {
+      "label": "荒废街区",
+      "color": "#4a5470"
+    }
+  },
+  "properties": {
+    "gakuen": [
+      [
+        "gate",
+        "学园正门",
+        1,
+        "poi-gate"
+      ],
+      [
+        "council",
+        "学生会室",
+        2,
+        "poi-council"
+      ],
+      [
+        "libcom",
+        "图书馆委员会",
+        2,
+        "poi-libcom"
+      ],
+      [
+        "explore",
+        "探索委员会",
+        2,
+        "poi-explore"
+      ],
+      [
+        "mutelib",
+        "无调图书馆",
+        3,
+        "poi-mutelib"
+      ],
+      [
+        "cathedral",
+        "地下大圣堂",
+        3,
+        "poi-cathedral"
+      ],
+      [
+        "tower",
+        "汉加米塔",
+        3,
+        "poi-tower"
+      ],
+      [
+        "pool",
+        "学园游泳池",
+        1,
+        "poi-pool"
+      ],
+      [
+        "dojo",
+        "弓道场",
+        1,
+        "poi-dojo"
+      ]
+    ],
+    "shopping": [
+      [
+        "family",
+        "家庭餐厅",
+        1,
+        "poi-family"
+      ],
+      [
+        "ktv",
+        "KTV包厢",
+        2,
+        "poi-ktv"
+      ],
+      [
+        "hotel",
+        "情侣酒店",
+        2,
+        "poi-hotel"
+      ],
+      [
+        "british",
+        "英国人街",
+        2,
+        "poi-british"
+      ],
+      [
+        "esports",
+        "Esports街区",
+        3,
+        "poi-esports"
+      ],
+      [
+        "tower2",
+        "观景台",
+        3,
+        "poi-tower2"
+      ],
+      [
+        "conveni",
+        "便利店",
+        1,
+        "poi-conveni"
+      ],
+      [
+        "arcade",
+        "游戏中心",
+        2,
+        "poi-arcade"
+      ]
+    ],
+    "daily": [
+      [
+        "sakura_flat",
+        "樱的公寓",
+        1,
+        "poi-sakura_flat"
+      ],
+      [
+        "user_flat",
+        "玩家的公寓",
+        2,
+        "poi-user_flat"
+      ],
+      [
+        "park",
+        "公园",
+        1,
+        "poi-park"
+      ],
+      [
+        "catspot",
+        "流浪猫的据点",
+        1,
+        "poi-catspot"
+      ],
+      [
+        "riverwalk",
+        "海边步道",
+        2,
+        "poi-seaside"
+      ],
+      [
+        "bookstore",
+        "旧书店",
+        2,
+        "poi-bookstore"
+      ],
+      [
+        "bakery",
+        "面包店",
+        1,
+        "poi-bakery"
+      ],
+      [
+        "sento",
+        "旧澡堂",
+        2,
+        "poi-sento"
+      ],
+      [
+        "bench",
+        "海边长椅",
+        1,
+        "poi-bench"
+      ]
+    ],
+    "taboo": [
+      [
+        "wall",
+        "东京巨壁",
+        2,
+        "poi-wall"
+      ],
+      [
+        "subway",
+        "地下铁道",
+        3,
+        "poi-subway"
+      ],
+      [
+        "manhole",
+        "下水道井盖",
+        2,
+        "poi-manhole"
+      ],
+      [
+        "station",
+        "黑列车车站",
+        3,
+        "poi-station"
+      ],
+      [
+        "houzuki",
+        "崩月家",
+        3,
+        "poi-houzuki"
+      ],
+      [
+        "garrison",
+        "废置兵舍",
+        2,
+        "poi-garrison"
+      ],
+      [
+        "hospital",
+        "废弃医院",
+        3,
+        "poi-hospital"
+      ],
+      [
+        "shelter",
+        "防空洞",
+        2,
+        "poi-shelter"
+      ],
+      [
+        "alley",
+        "崩月家后巷",
+        2,
+        "poi-alley"
+      ]
+    ]
+  },
+  "specials": {
+    "rest": "日常一幕",
+    "tax": "特别会计",
+    "bonus": "学园补助"
+  },
+  "special_names": {
+    "navi": "NAVI播报",
+    "cat": "灰色的流浪猫",
+    "monster": "炭化之人",
+    "train": "黑列车",
+    "device": "汉加米塔"
+  },
+  "special_cycle": [
+    [
+      "rest",
+      "日常一幕",
+      "badge-rest"
+    ],
+    [
+      "navi",
+      "NAVI播报",
+      "badge-navi"
+    ],
+    [
+      "rest",
+      "日常一幕",
+      "badge-rest"
+    ],
+    [
+      "rest",
+      "日常一幕",
+      "badge-rest"
+    ],
+    [
+      "navi",
+      "NAVI播报",
+      "badge-navi"
+    ],
+    [
+      "rest",
+      "中央广场",
+      "badge-rest"
+    ],
+    [
+      "bonus",
+      "学园补助",
+      "badge-bonus"
+    ],
+    [
+      "rest",
+      "日常一幕",
+      "badge-rest"
+    ],
+    [
+      "navi",
+      "NAVI播报",
+      "badge-navi"
+    ],
+    [
+      "tax",
+      "特别会计",
+      "badge-tax"
+    ],
+    [
+      "rest",
+      "日常一幕",
+      "badge-rest"
+    ],
+    [
+      "navi",
+      "NAVI播报",
+      "badge-navi"
+    ],
+    [
+      "rest",
+      "日常一幕",
+      "badge-rest"
+    ],
+    [
+      "cat",
+      "灰色的流浪猫",
+      "badge-cat"
+    ],
+    [
+      "rest",
+      "日常一幕",
+      "badge-rest"
+    ],
+    [
+      "navi",
+      "NAVI播报",
+      "badge-navi"
+    ],
+    [
+      "bonus",
+      "学园补助",
+      "badge-bonus"
+    ],
+    [
+      "rest",
+      "日常一幕",
+      "badge-rest"
+    ],
+    [
+      "tax",
+      "特别会计",
+      "badge-tax"
+    ],
+    [
+      "navi",
+      "NAVI播报",
+      "badge-navi"
+    ],
+    [
+      "rest",
+      "日常一幕",
+      "badge-rest"
+    ],
+    [
+      "monster",
+      "炭化之人",
+      "badge-monster"
+    ],
+    [
+      "rest",
+      "日常一幕",
+      "badge-rest"
+    ],
+    [
+      "train",
+      "黑列车",
+      "badge-train"
+    ],
+    [
+      "rest",
+      "日常一幕",
+      "badge-rest"
+    ],
+    [
+      "navi",
+      "NAVI播报",
+      "badge-navi"
+    ],
+    [
+      "rest",
+      "日常一幕",
+      "badge-rest"
+    ],
+    [
+      "rest",
+      "日常一幕",
+      "badge-rest"
+    ]
+  ],
+  "token_district": {
+    "train": "gakuen",
+    "cat": "daily",
+    "monster": "taboo"
+  },
+  "groups": {
+    "shopping": {
+      "label": "街市",
+      "color": "#d95a72"
+    },
+    "gakuen": {
+      "label": "学园区",
+      "color": "#4a8bc9"
+    },
+    "daily": {
+      "label": "住宅区",
+      "color": "#3f9e83"
+    },
+    "taboo": {
+      "label": "禁忌区",
+      "color": "#4a5470"
+    }
+  },
+  "group_names": {
+    "shopping": [
+      "家庭餐厅",
+      "披萨店",
+      "KTV包厢",
+      "情侣酒店"
+    ],
+    "gakuen": [
+      "学生会室",
+      "图书馆委员会",
+      "探索委员会",
+      "大圣堂"
+    ],
+    "daily": [
+      "樱的公寓",
+      "玩家的公寓",
+      "公园",
+      "流浪猫的据点"
+    ],
+    "taboo": [
+      "东京巨壁",
+      "地下铁道",
+      "下水道井盖",
+      "黑列车车站"
+    ]
+  },
+  "group_tiers": {
+    "shopping": [
+      1,
+      1,
+      2,
+      2
+    ],
+    "gakuen": [
+      1,
+      2,
+      2,
+      3
+    ],
+    "daily": [
+      1,
+      1,
+      1,
+      2
+    ],
+    "taboo": [
+      2,
+      3,
+      3,
+      3
+    ]
+  },
+  "poi_icons": {
+    "家庭餐厅": "poi-family",
+    "披萨店": "poi-family",
+    "KTV包厢": "poi-ktv",
+    "情侣酒店": "poi-hotel",
+    "学生会室": "poi-council",
+    "图书馆委员会": "poi-libcom",
+    "探索委员会": "poi-explore",
+    "大圣堂": "poi-cathedral",
+    "樱的公寓": "poi-sakura_flat",
+    "玩家的公寓": "poi-user_flat",
+    "公园": "poi-park",
+    "流浪猫的据点": "poi-catspot",
+    "东京巨壁": "poi-wall",
+    "地下铁道": "poi-subway",
+    "下水道井盖": "poi-manhole",
+    "黑列车车站": "poi-station"
+  },
+  "event_cards": [
+    {
+      "title": "三菜便当",
+      "flavor": "冰咖喱、渍金枪鱼、炖牛肉——第三样和第一样重复了。但幸福不分冷热。",
+      "effect": {
+        "type": "cash",
+        "amount": 150
+      }
+    },
+    {
+      "title": "芝士堆成山的披萨",
+      "flavor": "吃下去才发现，原来自己是喜欢芝士的。",
+      "effect": {
+        "type": "cash",
+        "amount": 120
+      }
+    },
+    {
+      "title": "命令：握手表演",
+      "flavor": "被要求表演才艺。熟练地完成三周回转并汪了一声，赏金入账。",
+      "effect": {
+        "type": "cash",
+        "amount": 100
+      }
+    },
+    {
+      "title": "好感度排行榜",
+      "flavor": "第二。走在路上买了一罐宣言可乐冷静了一下。",
+      "effect": {
+        "type": "cash",
+        "amount": -140
+      }
+    },
+    {
+      "title": "水仙的壁橱",
+      "flavor": "从壁橱深处发现水仙，她默默递来一沓零花钱：「哥哥，拿去用吧」",
+      "effect": {
+        "type": "cash",
+        "amount": 150
+      }
+    },
+    {
+      "title": "四颗心脏的梦",
+      "flavor": "黑衣车掌在梦里摇响了巨铃。惊醒后去买护身符。",
+      "effect": {
+        "type": "cash",
+        "amount": -160
+      }
+    },
+    {
+      "title": "高木秀明的遗言",
+      "flavor": "脊椎仍插在古电脑里。敬畏之余，投一枚硬币当香火钱。",
+      "effect": {
+        "type": "cash",
+        "amount": -130
+      }
+    },
+    {
+      "title": "井盖探险",
+      "flavor": "井盖编号 142653190215。地下废弃铁道里捡到一件反现实遗物。",
+      "effect": {
+        "type": "cash",
+        "amount": 200
+      }
+    },
+    {
+      "title": "舞步音符",
+      "flavor": "用音符把自己从大楼间弹飞，赶上了末班电车，省下一笔打车费。",
+      "effect": {
+        "type": "cash",
+        "amount": 100
+      }
+    },
+    {
+      "title": "NAVI的骚扰提醒",
+      "flavor": "猫耳AI提醒：体检套餐截止日就是今天。",
+      "effect": {
+        "type": "cash",
+        "amount": -130
+      }
+    },
+    {
+      "title": "KTV五人组",
+      "flavor": "华淡起哄、水仙跑调、索菲优雅吃蜂蜜吐司。最后樱合唱了那首歌。",
+      "effect": {
+        "type": "cash",
+        "amount": 180
+      }
+    },
+    {
+      "title": "蓝之心脏警报",
+      "flavor": "反现实密度异常上升，全楼避难。便利店抢购花销不小。",
+      "effect": {
+        "type": "cash",
+        "amount": -150
+      }
+    },
+    {
+      "title": "学园奖学金",
+      "flavor": "学生会长亲自盖章批下来的款项，附言只有四个字：「好好努力」",
+      "effect": {
+        "type": "cash",
+        "amount": 250
+      }
+    },
+    {
+      "title": "学生会室加薪",
+      "flavor": "调停了探索委员会与图书馆委员会的纠纷。会长轻声说：「我总是不太会说话」。",
+      "effect": {
+        "type": "cash",
+        "amount": 130
+      }
+    },
+    {
+      "title": "猫的祝福",
+      "flavor": "灰色钩尾的流浪猫在第 215 次终于让人摸了头。下次掷骰 +1。",
+      "effect": {
+        "type": "dice_bonus",
+        "bonus": 1
+      }
+    },
+    {
+      "title": "时间停止",
+      "flavor": "「你的时间，先停一停。下次的账单，就一并免了吧」——B.E.G. 暂停了一次租金。",
+      "effect": {
+        "type": "rent_free"
+      }
+    },
+    {
+      "title": "沉睡的宜必斯",
+      "flavor": "无调图书馆的白鸟借出一本禁书。下次经过起点，工资翻倍。",
+      "effect": {
+        "type": "salary_next"
+      }
+    },
+    {
+      "title": "黑列车的梦路",
+      "flavor": "梦见列车进站，车掌直直盯着。醒来发现已站在起点。",
+      "effect": {
+        "type": "goto_start"
+      }
+    },
+    {
+      "title": "学生会活动费",
+      "flavor": "以学生会的名义向在场所有人收取活动费。",
+      "effect": {
+        "type": "collect_each",
+        "amount": 100
+      }
+    },
+    {
+      "title": "崩月家的请帖",
+      "flavor": "家族聚会的份子钱，不交不行。",
+      "effect": {
+        "type": "pay_each",
+        "amount": 100
+      }
+    },
+    {
+      "title": "究极女主角运",
+      "flavor": "被卷入怪獣战却毫发无伤，事后领到观测协作抚恤金。",
+      "effect": {
+        "type": "cash",
+        "amount": 160
+      }
+    },
+    {
+      "title": "恒常性擦除",
+      "flavor": "街角的反现实被世界擦除了，顺手捡到一管观测数据。",
+      "effect": {
+        "type": "cash",
+        "amount": 110
+      }
+    },
+    {
+      "title": "门禁六点",
+      "flavor": "「玩到几点了。」——迟到罚站，零花钱被扣。",
+      "effect": {
+        "type": "cash",
+        "amount": -120
+      }
+    },
+    {
+      "title": "周末的约会",
+      "flavor": "「太疯跑的话，回去的路会很难走哦」——但花出去的每一分都值得。",
+      "effect": {
+        "type": "cash",
+        "amount": -80
+      }
+    },
+    {
+      "title": "学生食堂的偏爱",
+      "flavor": "「今天给你多盛一勺。」——食堂阿姨的偏爱换来了满格体力。",
+      "effect": {
+        "type": "cash",
+        "amount": 90
+      }
+    },
+    {
+      "title": "蓝之心脏的共鸣",
+      "flavor": "蓝色的心脏与街角的反现实同频了一瞬。回过神来，账户里多了一笔谁也说不清来源的钱。",
+      "effect": {
+        "type": "cash",
+        "amount": 800
+      },
+      "weight": 2,
+      "rare": true
+    },
+    {
+      "title": "黑列车的警笛",
+      "flavor": "列车毫无预兆地碾过天际，巨铃震得耳膜发麻。回过神来，钱包和理智都空了一半。",
+      "effect": {
+        "type": "cash",
+        "amount": -620
+      },
+      "weight": 2,
+      "rare": true
+    }
+  ],
+  "bank_name": "特别会计",
+  "flag_cards": {
+    "rent_free": "时间停止",
+    "salary_next": "沉睡的宜必斯"
+  },
+  "story": {
+    "cat": "在「{name}」跟前蹲下来，花 ¥{cost} 买了猫粮——这次它没有躲开（+¥{gain}）。",
+    "cat_broke": "路过{name}，想喂猫却连猫粮钱都掏不出来……只能远远看一眼。",
+    "monster": "「{name}」出现在路口！{opponent}发动『{free_card}』把它定在原地——但被烧掉的钱停不住（-¥{toll}）。",
+    "train": "{name}无声地停在面前，持巨铃的车掌伸出了手——这是车票钱（-¥{toll}）。",
+    "tax": "踩到{name}，缴税 ¥{paid}。",
+    "bonus": "踩到{name}，+¥{amount}。",
+    "rent_free": "踩到 {owner}的「{cell}」，租金 ¥{rent}——但{payer}发动『{free_card}』把账单停住了，免租！",
+    "salary_double": "经过起点，领工资 +¥{salary}（禁书知识让工资翻了倍）。",
+    "mortgage_bank": "把「{cell}」抵押给了{bank}，回收 ¥{gain}（抵押期间不收租）。",
+    "mortgage_forced": "抵押「{cell}」，回收 ¥{gain}。"
+  },
+  "cell_forms": {
+    "start": "学园前・起点",
+    "end": "终点",
+    "property": "地产",
+    "shop": "商店",
+    "game": "游戏",
+    "coin": "金币",
+    "event": "事件"
+  },
+  "coin_tiers": [
+    100,
+    200,
+    300
+  ],
+  "shop_items": {
+    "dice_label": "特殊骰子",
+    "dice_note": "买一个，下一次掷骰自选点数",
+    "gain_label": "现金增益",
+    "gain_note": "接下来 3 回合收入 ×1.5",
+    "loss_label": "节流道具",
+    "loss_note": "接下来 3 回合支出 ×0.5"
+  },
+  "game_events": [
+    {
+      "key": "tax",
+      "name": "特别会计",
+      "story": "「{name}」翻开了账本——这次要和你算一算。",
+      "win": "你抢在结账前找到了漏洞，这次不用缴。",
+      "lose": "账目对得严丝合缝，缴税 ¥{amount}。"
+    },
+    {
+      "key": "bonus",
+      "name": "学园补助",
+      "story": "「{name}」的申请批下来了。",
+      "win": "补助到手，+¥{amount}。",
+      "lose": "手续差了最后一枚印章，这次没批下来。"
+    },
+    {
+      "key": "cat",
+      "name": "灰色的流浪猫",
+      "story": "「{name}」从纸箱后面探出头。",
+      "win": "它蹭了蹭你的手，领你去了它藏东西的地方（+¥{amount}）。",
+      "lose": "它叼走猫粮就跑，连头都没回（-¥{amount}）。"
+    },
+    {
+      "key": "monster",
+      "name": "炭化之人",
+      "story": "「{name}」在路口站住了。",
+      "win": "你贴着墙根绕了过去，它没有追。",
+      "lose": "它抬手一挥，烧掉的钱停不住（-¥{amount}）。"
+    },
+    {
+      "key": "train",
+      "name": "黑列车",
+      "story": "「{name}」无声地停在面前，车掌伸出了手。",
+      "win": "你帮黑车掌确认了归路，她交给你一份谢礼（+¥{amount}）。",
+      "lose": "没有月票，只能补票（-¥{amount}）。"
+    }
+  ]
+}
