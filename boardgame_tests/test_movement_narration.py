@@ -36,16 +36,24 @@ class MovementNarrationTests(unittest.TestCase):
         self.service._agent_turns.clock = lambda: 1000.0
 
     def commit(self, action='roll', arguments=None):
-        response = self.service.handle_action('act_sakura', {})
-        self.assertTrue(response['ok'], response)
-        self.assertEqual(len(self.work), 1)
-        self.work.pop()()
         turns = self.service._agent_turns
+        continuing = turns.ticket and turns.ticket['status'] == 'thinking'
+        if continuing:
+            self.assertEqual(len(self.work), 0)
+            turns.state({'token': turns.ticket['token']})
+        else:
+            response = self.service.handle_action('act_sakura', {})
+            self.assertTrue(response['ok'], response)
+            self.assertEqual(len(self.work), 1)
+            self.work.pop()()
         self.assertEqual(turns.public()['status'], 'thinking')
         result = turns.commit({'token': turns.ticket['token'], 'action': action,
                                'arguments': arguments or {}})
         self.assertTrue(result['ok'])
-        self.assertEqual(result['agentDecision']['status'], 'committed')
+        self.assertEqual(result['agentDecision']['status'],
+                         'thinking' if result['continuation'] else 'committed')
+        if result['continuation']:
+            self.assertEqual(result['continuation']['token'], turns.ticket['token'])
         self.assertNotIn('movement', result)
         return result
 
@@ -115,6 +123,9 @@ class MovementNarrationTests(unittest.TestCase):
         self.assertIsNone(result['pending'])
         self.assertIsNone(game._walk)
         self.assertEqual(result['next'], 'user')
+        self.assertEqual(self.service._last_event['dice'], 3)
+        self.assertEqual(self.service._last_event['path'], [7, 8, 9, 10])
+        self.assertEqual(self.service._last_event['diceTurn'], game.dice_turn)
         self.assertIn(f"轮到 {plugin.PLAYER_LABEL['user']}", result['status'])
         self.assertNotIn('没走完', result['status'])
         self.assertNotIn('没走完', self.service._monopoly_status(result))

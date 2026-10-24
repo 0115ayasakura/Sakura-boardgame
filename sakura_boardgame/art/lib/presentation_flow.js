@@ -4,7 +4,7 @@
  */
 (function (root) {
   'use strict';
-  const ADVANCING_ACTIONS = new Set(['roll', 'decide', 'act_sakura', 'place', 'undo', 'start', 'black_train_start']);
+  const ADVANCING_ACTIONS = new Set(['roll', 'decide', 'act_sakura', 'agent_fallback', 'place', 'undo', 'start', 'black_train_start']);
   function movementHeld(state) {
     return !!(state.visualMovePending || state.moveAnim || state.pendingMove || state.arrivalHold != null);
   }
@@ -60,7 +60,7 @@
           if (!ADVANCING_ACTIONS.has(action)) return true;
           // Active black decisions/rolls belong to the black FSM, not ordinary
           // tower rules. Its unread-result/return lock remains authoritative.
-          if (blackActive && ['roll', 'decide', 'act_sakura'].includes(action)) return !ordinaryVisualBusy;
+          if (blackActive && ['roll', 'decide', 'act_sakura', 'agent_fallback'].includes(action)) return !ordinaryVisualBusy;
           return !ordinaryLocked;
         default: return false; // New intents must explicitly choose a policy.
       }

@@ -18,7 +18,7 @@ MUTATING_METHODS = frozenset({
     'sakura_action', 'auto', 'undo', 'end',
 })
 SNAPSHOT_FIELDS = (
-    '_version', '_game_seq', '_log', '_lines_written', '_last_event', '_snapshots',
+    '_version', '_game_seq', '_play_paused', '_log', '_lines_written', '_last_event', '_snapshots',
     '_busy_at', '_last_talk', '_opponent', '_persona', '_request_cache',
 )
 _MISSING = object()

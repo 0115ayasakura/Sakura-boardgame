@@ -159,6 +159,18 @@ function fixture(renderer = null) {
   const view={document:doc,board3d:renderer,gameKey:1};
   return {doc,e:elements,sync(g,extra={}){V.sync({...view,game:g,...extra});}};
 }
+// Pausing cancels the existing role timer; cached choices cannot cross the pause.
+{
+  const paused=fixture(), sent=[];
+  const choice={...game,turn:'sakura',pending:{...game.pending,player:'sakura'}};
+  const send=async(...args)=>{sent.push(args);return {ok:true};};
+  paused.sync(choice,{send,playPaused:false});assert.equal(timers.size,1);
+  paused.sync(choice,{send,playPaused:true});assert.equal(timers.size,0);
+  await advance(10000);assert.equal(sent.length,0);
+  paused.sync(choice,{send,playPaused:false});assert.equal(timers.size,1);
+  await advance(1400);assert.equal(sent.length,1,'explicit resume restores one existing FSM timer, not a second scheduler');
+  paused.sync(null);assert.equal(timers.size,0);
+}
 // Production ownership evidence: there is no black role-roll timer. Only a
 // pending role event schedules an automatic choice, exactly once per event key.
 {
@@ -248,6 +260,83 @@ raced.sync(sameOpponent,{send:()=>new Promise((_,reject)=>{rejectOld=reject;})})
 // Start the scheduled task without awaiting its unresolved request.
 const autoEntry=[...timers.entries()].find(([,t])=>t.at===clock+1400);assert.ok(autoEntry);timers.delete(autoEntry[0]);const oldRequest=autoEntry[1].fn();
 raced.sync(sameOpponent,{gameKey:2,send:async()=>{}});rejectOld(Error('old failure'));await oldRequest;assert.doesNotMatch(raced.e['black-train-event-card'].innerHTML,/old failure/);raced.sync(null,{gameKey:2});
+// Real production FSM: returned business failures and throws persist across polls;
+// uncertainty first requires an authoritative sync and never schedules a resend.
+const autoGame={...sameOpponent,black_train:{...sameOpponent.black_train,history:[]}};
+for (const failure of [{ok:false,error:'business <failure>'},Error('transport failure')]) {
+  const failed=fixture();let count=0;
+  const send=async()=>{count++;if(failure instanceof Error)throw failure;return failure;};
+  failed.sync(autoGame,{send});await advance(1400);
+  assert.match(failed.e['black-train-event-card'].innerHTML,/role="alert"/,'failed API result must be visible');
+  assert.match(failed.e['black-train-event-card'].innerHTML,/手动重试/);
+  failed.sync(autoGame,{send});await advance(60000);
+  assert.equal(count,1,'failure cannot auto-retry on poll');
+  assert.match(failed.e['black-train-event-card'].innerHTML,/role="alert"/);
+  const retry=failed.e['black-train-event-card'].querySelector('[data-bt-retry]');
+  await retry.onclick();assert.equal(count,2,'only manual retry sends');
+  failed.sync(null);
+}
+{
+  const uncertain=fixture();let count=0;
+  const send=async()=>{count++;return {ok:false,uncertain:true,error:'response lost'};};
+  uncertain.sync(autoGame,{send});await advance(1400);
+  assert.match(uncertain.e['black-train-event-card'].innerHTML,/核态/);
+  assert.equal(uncertain.e['black-train-event-card'].querySelector('[data-bt-retry]'),null,'unverified uncertainty cannot resend');
+  await advance(60000);assert.equal(count,1);
+  uncertain.sync(autoGame,{send});
+  assert.equal(uncertain.e['black-train-event-card'].querySelector('[data-bt-retry]'),null,'render of cached game is not a state check');
+  uncertain.sync(structuredClone(autoGame),{send});
+  assert.match(uncertain.e['black-train-event-card'].innerHTML,/手动重试/);
+  await advance(60000);assert.equal(count,1,'verified uncertainty still never auto-resends');
+  const retry=uncertain.e['black-train-event-card'].querySelector('[data-bt-retry]').onclick;
+  uncertain.sync(herResolved,{send});await retry();assert.equal(count,1,'committed result cannot be revived by cached retry');
+  uncertain.sync(null);
+}
+{
+  const concurrent=fixture();let resolveRequest,count=0;
+  const send=()=>{count++;return new Promise(resolve=>{resolveRequest=resolve;});};
+  concurrent.sync(autoGame,{send});
+  const entry=[...timers.entries()].find(([,t])=>t.at===clock+1400);timers.delete(entry[0]);const request=entry[1].fn();
+  concurrent.sync(autoGame,{send});await advance(60000);assert.equal(count,1,'concurrent polls cannot duplicate in-flight send');
+  concurrent.sync(herResolved,{send});resolveRequest({ok:false,uncertain:true,error:'late failure'});await request;
+  assert.doesNotMatch(concurrent.e['black-train-event-card'].innerHTML,/late failure|data-bt-retry/,'committed history wins over late failure');
+  concurrent.sync(null);
+}
+{
+  const manual=fixture();let count=0;
+  const send=async()=>{count++;return {ok:false,error:'invalid choice'};};
+  manual.sync(game,{send});await manual.e['black-train-event-card'].querySelector('[data-bt-choice]').onclick();
+  assert.match(manual.e['black-train-event-card'].innerHTML,/invalid choice/);
+  manual.sync(game,{send});assert.match(manual.e['black-train-event-card'].innerHTML,/手动重试/);
+  const cached=manual.e['black-train-event-card'].querySelector('[data-bt-choice]').onclick;
+  manual.sync({...game,pending:{...game.pending,event:{title:'new event'}}},{send});await cached();assert.equal(count,1,'old event choice cannot revive');
+  manual.sync(null);
+}
+{
+  const checked=fixture();let count=0;
+  const send=async()=>{count++;return {ok:false,uncertain:true,stateChecked:true,error:'checked response loss'};};
+  checked.sync(autoGame,{send});await advance(1400);
+  assert.ok(checked.e['black-train-event-card'].querySelector('[data-bt-retry]'),'successful poll receipt allows manual retry even if server version is unchanged');
+  await advance(60000);assert.equal(count,1);checked.sync(null);
+}
+{
+  const submitted=fixture();let count=0;
+  const send=async()=>{count++;return {ok:true};};
+  submitted.sync(game,{send});const cached=submitted.e['black-train-event-card'].querySelector('[data-bt-choice]').onclick;
+  await cached();await cached();submitted.sync(structuredClone(game),{send});
+  await submitted.e['black-train-event-card'].querySelector('[data-bt-choice]').onclick();
+  assert.equal(count,1,'accepted submission cannot be revived by cached choices or stale same-event polls');submitted.sync(null);
+}
+{
+  const manualThrow=fixture();
+  manualThrow.sync(game,{send:async()=>{throw Error('manual transport');}});
+  await manualThrow.e['black-train-event-card'].querySelector('[data-bt-choice]').onclick();
+  assert.match(manualThrow.e['black-train-event-card'].innerHTML,/manual transport/);
+  manualThrow.sync(game);assert.match(manualThrow.e['black-train-event-card'].innerHTML,/手动重试/);manualThrow.sync(null);
+}
+assert.equal(V.phase({}),'idle');
+const phases=fixture();phases.sync(game,{deferEntry:true});assert.equal(V.phase(phases.doc),'waiting-entry');
+phases.sync(game);assert.equal(V.phase(phases.doc),'active');phases.sync(null);assert.equal(V.phase(phases.doc),'idle');
 // Values are displayed as supplied by settlement, not recomputed from account/reward rules.
 const mismatched={...finished,black_train:{...finished.black_train,settlement:{user:{base:7,reward:8,tickets:9,ticket_cash:10,total:123,expired_items:['<lamp>']}}}};
 assert.match(V.settlementHTML(mismatched,{user:'<玩家>'}),/固定报酬 ¥7/);assert.match(V.settlementHTML(mismatched),/合计 ¥123/);assert.match(V.settlementHTML(mismatched),/&lt;lamp&gt;/);assert.match(V.settlementHTML(mismatched),/结算明细未提供/);
@@ -344,7 +433,7 @@ queueContext.syncBlackTrainUI();
 assert.equal(ordinaryElements['e-card-title'].textContent,'本回合普通事件');assert.equal(ingressVisible,false);
 await advance(1000);queueContext.closeCard();assert.equal(ordinaryElements['e-card-title'].textContent,'黑列车预告');assert.equal(ingressVisible,false);
 await advance(3200);assert.equal(ordinaryElements['card-modal'].classList.contains('show'),true,'old card timer cannot close its successor');
-await advance(1000);assert.equal(ordinaryElements['card-modal'].classList.contains('show'),false);assert.equal(ingressVisible,true,'only drained ordinary presentation permits train tiles/camera');
+await advance(1000);assert.equal(ordinaryElements['card-modal'].classList.contains('show'),true,'important train announcement waits for explicit acknowledgement');assert.equal(ingressVisible,false,'elapsed time cannot acknowledge an important announcement');queueContext.closeCard();assert.equal(ingressVisible,true,'only explicitly drained ordinary presentation permits train tiles/camera');
 assert.equal(V.presentationActive(ingress.doc),true);assert.equal(V.inputLocked(ingress.doc),false);
 ingress.sync(null);queueContext.resetCardQueue();assert.equal(timers.size,0);
 // A renderer not yet mounted cannot consume the entry gate or lose the waiting lock.
@@ -353,4 +442,4 @@ lateMount.sync(game,{mapReady:true});assert.equal(V.presentationActive(lateMount
 const luminance=hex=>hex.match(/../g).map(n=>parseInt(n,16)/255).map(n=>n<=.04045?n/12.92:((n+.055)/1.055)**2.4).reduce((s,n,i)=>s+n*[.2126,.7152,.0722][i],0);
 assert.ok((luminance('f3ce72')+.05)/(luminance('252938')+.05)>4.5);
 for(const [,type,body] of html.matchAll(/<script(?: type="([^"]+)")?>([\s\S]*?)<\/script>/g))if(!type)new vm.Script(body);
-console.log('PASS black train view: schema/escaping, personal ledgers, queued explicit final confirmation, frozen presentation positions, real transition/theme completion gate, independent untimed settlement, poll/refresh/new-game cleanup, stale callback and API/auto input locks, DOM fallback, ordinary-card FIFO/timer isolation, entry gating on every movement flag and dice/game/check/shop/card completion, delayed renderer mounting, inline-script syntax');
+console.log('PASS black train view: schema/escaping, personal ledgers, queued explicit final confirmation, frozen presentation positions, real transition/theme completion gate, independent untimed settlement, poll/refresh/new-game cleanup, stale callback and API/auto input locks, returned business failures/throws persisted, uncertain state-check receipt and fresh-snapshot gate, no automatic resend, concurrent refresh and committed/stale response guards, read-only phases, DOM fallback, ordinary-card FIFO/timer isolation, entry gating on every movement flag and dice/game/check/shop/card completion, delayed renderer mounting, inline-script syntax');

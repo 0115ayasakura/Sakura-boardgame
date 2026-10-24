@@ -15,7 +15,7 @@ def main():
     with zipfile.ZipFile(buf,'w',zipfile.ZIP_DEFLATED) as archive:
         for path in files: archive.writestr('Sakura-boardgame-'+commit+'/'+path.relative_to(root).as_posix(),path.read_bytes())
     package, manifest=package_source(buf.getvalue(),repository,commit)
-    assert manifest['id']=='local.sakura.boardgame' and manifest['version']=='1.0.2-preview'
+    assert manifest['id']=='local.sakura.boardgame' and manifest['version']=='1.0.3-pre'
     assert (root/'plugin.py').is_file()
     black=root/'art/black_train'
     for name, metadata in json.loads((black/'manifest.json').read_text(encoding='utf-8'))['files'].items():

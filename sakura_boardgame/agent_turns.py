@@ -1,4 +1,4 @@
-"""One-shot, version-bound board decisions executed by the host's real Agent.
+"""Version-bound board decisions and bounded same-chat Agent continuations.
 
 Host calls never run under the game lock. Tickets are ephemeral capabilities, not
 save data; restarting/unloading the plugin revokes every outstanding ticket.
@@ -20,10 +20,15 @@ except ImportError:
 
 ACTIVE = frozenset({'queued', 'thinking'})
 TTL_SECONDS = 120
+MAX_CHAIN_ACTIONS = 8
+CONTINUATION_PENDING = frozenset({'route', 'dice', 'land', 'shop', 'black_train'})
 
 # Model-facing constraints, not a claim that generated prose is infallible.
 FACTUAL_NARRATION_HINT = (
-    '像一起玩游戏的伙伴那样自然回应：可以开心、吐槽、期待，也可以简短解释自己的选择；不必逐项念状态或每轮重复余额。'
+    '像一起玩游戏的伙伴那样自然回应：可以开心、吐槽，也可以简短解释选择，不必逐项念状态或每轮重复余额。'
+    '先完成工具返回continuation所指的自己的连续选择，再统一解说；中途不先写准备怎么选的长篇旁白。'
+    '最终只写1个简短片段、1至2句，中文正文以40至70字为宜、最多90字；其他语言同样简短，'
+    '只讲这次选择和关键结果，带一句自然的角色反应即可，不复述整张棋盘、全部选项或规则。'
     '把角色感受与游戏事实分开：感受和玩笑可以自由发挥，规则、事件效果、得失及行动归属以本次commit的story/status/pending/cash为准，'
     '不把气氛描写说成额外规则（例如票价随车掌心情改变），也不把旧事件当成本次发生。'
     '行动前state用于决策，播报以行动后的commit结果为准；提交失败就自然说明没办成，不编造成功结果。'
@@ -31,14 +36,15 @@ FACTUAL_NARRATION_HINT = (
     '不得按len(path)推算实际步数，也不得自行计算实际步数。'
     'steps_left>0时只说已部分行走与剩余步数，不得说已走完dice步或整个回合；'
     'pending.player=sakura时仍由你行动，不得说轮到用户。'
-    '路线选择成功不等于购买地产；pending仍为land时只说到达并等待下次决策，'
+    '路线选择成功不等于购买地产；pending仍为land时尚未买入，'
     '未有本次购买成功事实，不得声称产权归自己或已支付购地款。'
     '余额只照抄本次cash中对应玩家的原始整数，其他金额只照抄本次story/status明确给出的原始整数，'
     '统一使用¥单位，禁止自行计算余额或换算成万、亿及现实货币；'
     '中文、日文和其他语言必须使用完全相同的阿拉伯数字。缺少权威金额就不报金额。'
     '五子棋落点只按本次move的1基行列播报；没有引擎明确结论，不补充上下左右、斜角、封堵或关键手判断。'
     'winner=sakura表示你获胜，winner=user表示用户获胜；没有winner就不得宣告获胜。'
-    '本次动作成功后停止调用走棋工具，不让用户代选sakura的后续子动作，等待插件下一次token。'
+    '仅当commit明确返回continuation时，使用其中的新token继续state和commit；没有continuation就停止调用走棋工具并简短收尾，'
+    '不让用户代选sakura的子动作，不自行开始下一次掷骰。'
 )
 
 
@@ -83,6 +89,7 @@ class AgentTurns:
         return dict(current)
 
     def legal(self):
+        self.service._guard_playing()
         game = self.service._game
         if not game or game.winner or getattr(game, 'draw', False):
             raise self._error('当前没有可行动的对局。')
@@ -129,7 +136,7 @@ class AgentTurns:
                      if ticket['status'] == 'queued' else
                      'Agent决策派发后未在时限内提交动作，请手动重试。')
             self._set_status(ticket, 'expired', error=error)
-        elif (self.closed or self.service.decision_driver() != 'agent'
+        elif (self.closed or self.service._play_paused or self.service.decision_driver() != 'agent'
               or ticket['gameSeq'] != self.service._game_seq
               or ticket['version'] != self.service._version):
             self._set_status(ticket, 'cancelled', error='棋盘或控制方式已改变，旧决策已失效。')
@@ -144,6 +151,7 @@ class AgentTurns:
 
     def request(self):
         """Called in the outer action transaction; merely stage, never submit."""
+        self.service._guard_playing()
         self._refresh()
         if self.closed:
             raise self._error('插件已停止。')
@@ -160,6 +168,7 @@ class AgentTurns:
                        'version': self.service._version, 'action': legal['action'], 'legal': legal,
                        'expiresAt': int((self.clock() + TTL_SECONDS) * 1000),
                        'epoch': self.epoch, 'scheduled': False, 'turn': self.service._game.turn,
+                       'chainActions': 1,
                        'characterId': (previous['characterId'] if continuation else
                                        self.service._opponent.get('id') or None),
                        'sessionId': previous['sessionId'] if continuation else None,
@@ -175,6 +184,40 @@ class AgentTurns:
             raise self._error('该决策已结束；取消不会撤销已执行的棋步。')
         self._set_status(self.ticket, 'cancelled', error='已取消棋盘等待；宿主回复或语音可能继续。')
         return {'ok': True, 'status': self.ticket['error'], 'agentDecision': self.public()}
+
+    def fallback(self, identifier):
+        """One explicit algorithm action, bound to a failed current intention.
+
+        The caller owns the service transaction: revocation precedes execution,
+        and both the ticket and game are restored if execution/save fails.
+        """
+        self._refresh()
+        ticket = self.ticket
+        if not isinstance(identifier, str) or not ticket or identifier != ticket['id']:
+            raise self._error('等待任务已改变，请刷新后再代操作。')
+        if ticket['status'] not in {'expired', 'failed'}:
+            raise self._error('只有超时或失败的Agent决策可以手动由算法代操作。')
+        if (self.closed or self.service.decision_driver() != 'agent'
+                or ticket['epoch'] != self.epoch
+                or ticket['gameSeq'] != self.service._game_seq
+                or ticket['version'] != self.service._version):
+            raise self._error('棋盘或控制方式已改变，不能代操作旧决策。')
+        legal = self.legal()
+        if (self.service._game.turn != ticket['turn'] or legal != ticket['legal']
+                or (ticket.get('characterId') and
+                    ticket['characterId'] != self.service._opponent.get('id'))):
+            raise self._error('角色或合法动作已改变，请重新请求决策。')
+        self._set_status(ticket, 'cancelled', error='已撤销旧Agent决策，本次由算法代操作。')
+        # Reuse the existing scoped seat authorization, never change the driver.
+        previous = self.service._agent_applying
+        self.service._agent_applying = True
+        try:
+            result = self.service._execute_algorithm_action(legal)
+        finally:
+            self.service._agent_applying = previous
+        if not isinstance(result, Mapping) or result.get('ok') is False or not result.get('status'):
+            raise self._error('算法未返回成功结果，本次代操作已撤销。')
+        return {**result, 'ok': True, 'narrated': False, 'agentDecision': self.public()}
 
     def dispatch_pending(self):
         """Invoked only after the outer transaction succeeds AND releases its lock."""
@@ -240,11 +283,14 @@ class AgentTurns:
                 # the next turn after a user move. Waiting does not submit or
                 # interrupt chat. One worker, original TTL, no host cancellation.
                 self.wait(0.25)
-            message = ('【棋盘插件主动决策请求，不是用户消息】你现在控制sakura棋子。只决定并提交一次动作；'
-                       '必须调用boardgame_agent_state取得权威状态，再调用boardgame_agent_commit。'
+            message = ('【棋盘插件主动决策请求，不是用户消息】你现在控制sakura棋子。'
+                       '先调用boardgame_agent_state取得权威状态，再调用boardgame_agent_commit提交合法动作。'
+                       '仅当commit结果明确含result.continuation（工具结果中的continuation对象）时，'
+                       '使用其中的新token继续state再commit，在同一对话先完成连续选择，再最终简短解说。'
+                       '没有continuation就停止走棋工具并收尾，不自行开始下一次掷骰。'
                        '不能使用旧boardgame_roll/decide/place/auto工具代算或代替玩家。'
-                       '不要仅口头声称走棋；引擎工具成功才算走棋。token只对本次动作有效。'
-                       '本次成功后不要让用户代选后续路线等子动作；插件将在宿主空闲后再次唤醒你。'
+                       '不要仅口头声称走棋；引擎工具成功才算走棋。每个token只对其一个动作有效。'
+                       '不要让用户代选sakura的后续子动作；不因成功就提前写最终旁白。'
                        '如工具拒绝或状态过期，请停止，不要重试旧选择。' +
                        FACTUAL_NARRATION_HINT + '\n' + json.dumps(request, ensure_ascii=False))
             # Explicit session identity: host rejects busy/switched sessions rather
@@ -298,6 +344,37 @@ class AgentTurns:
                 self._validate(token, identity)
         return self.service._commit_agent(arguments, identity=identity)
 
+    def _continue(self, previous):
+        """Mint only a known Sakura subdecision, within the current transaction.
+
+        The host is already running this conversation: thinking + scheduled keep
+        UI polling/request/dispatch from launching another host submission. The
+        checkpoint owns both this replacement and its frozen parent receipt.
+        """
+        game = self.service._game
+        pending = getattr(game, 'pending', None)
+        count = previous.get('chainActions', 1)
+        if (game.kind != 'monopoly' or game.winner or getattr(game, 'draw', False)
+                or previous['action'] not in {'roll', 'decide'}
+                or count >= MAX_CHAIN_ACTIONS or not pending
+                or pending.get('type') not in CONTINUATION_PENDING
+                or pending.get('player') != 'sakura' or game.turn != previous['turn']):
+            return None
+        legal = self.legal()
+        ticket = {'id': secrets.token_urlsafe(12), 'token': secrets.token_urlsafe(32),
+                  'status': 'thinking', 'scheduled': True,
+                  'gameSeq': self.service._game_seq, 'version': self.service._version,
+                  'epoch': self.epoch, 'turn': game.turn,
+                  'sessionId': previous['sessionId'], 'characterId': previous['characterId'],
+                  'action': legal['action'], 'legal': legal,
+                  'expiresAt': int((self.clock() + TTL_SECONDS) * 1000),
+                  'chainActions': count + 1}
+        self.ticket = ticket
+        return {'token': ticket['token'], 'gameSeq': ticket['gameSeq'],
+                'version': ticket['version'], 'expiresAt': ticket['expiresAt'],
+                'player': 'sakura', 'legalAction': copy.deepcopy(legal),
+                'chainActions': ticket['chainActions'], 'maxChainActions': MAX_CHAIN_ACTIONS}
+
     def apply(self, arguments, identity):
         """In the ordinary service transaction; failures restore ticket + engine."""
         token, action = arguments.get('token'), arguments.get('action')
@@ -341,8 +418,10 @@ class AgentTurns:
         # so retries return the original receipt rather than a later balance.
         if self.service._game.kind == 'monopoly':
             result = {**result, 'cash': copy.deepcopy(self.service._game.cash)}
+        continuation = self._continue(ticket)
         # Replace legacy next-tool instructions only in this Agent result.
         result = {**result, 'hint': FACTUAL_NARRATION_HINT,
+                  'continuation': continuation,
                   'ok': True, 'requestId': token, 'duplicate': False,
                   'gameSeq': self.service._game_seq, 'version': self.service._version,
                   'agentDecision': self.public()}

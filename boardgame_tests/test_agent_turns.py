@@ -56,7 +56,7 @@ class Context:
 
 class AgentTurnTests(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.TemporaryDirectory(prefix='sakura-agent-')
+        tmp = tempfile.TemporaryDirectory(prefix='sakura-agent-', dir=Path(__file__).parent)
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
         self.chat = HostChat()
@@ -80,13 +80,37 @@ class AgentTurnTests(unittest.TestCase):
         self.request_seq += 1
         response = self.service.handle_action('act_sakura', {}, metadata=self.meta(f'begin-{self.request_seq}'))
         self.assertTrue(response['ok'], response)
-        self.assertEqual(response['agentDecision']['status'], 'queued')
         self.assertNotIn('token', response['agentDecision'])
-        self.assertEqual(len(self.work), 1)
-        self.work.pop()()
+        if response['agentDecision']['status'] == 'thinking':
+            # An already-issued continuation belongs to the running host turn.
+            self.assertGreater(self.service._agent_turns.ticket['chainActions'], 1)
+            self.assertEqual(self.work, [])
+        else:
+            self.assertEqual(response['agentDecision']['status'], 'queued')
+            self.assertEqual(len(self.work), 1)
+            self.work.pop()()
         self.assertEqual(self.service._agent_turns.public()['status'], 'thinking')
         token = self.service._agent_turns.ticket['token']
         return token, self.service._agent_turns.state({'token': token})
+
+    def follow(self, result):
+        continuation = result['continuation']
+        self.assertIsInstance(continuation, dict)
+        token = continuation['token']
+        self.assertNotEqual(token, result['requestId'])
+        self.assertEqual(result['agentDecision']['status'], 'thinking')
+        ticket = self.service._agent_turns.ticket
+        self.assertEqual(ticket['token'], token)
+        self.assertTrue(ticket['scheduled'])
+        self.assertEqual(self.work, [])
+        submitted = copy.deepcopy(self.chat.requests)
+        self.service._agent_turns.dispatch_pending()
+        snapshot = self.service._agent_turns.state({'token': token})
+        for key in ('token', 'gameSeq', 'version', 'expiresAt', 'player', 'legalAction'):
+            self.assertEqual(continuation[key], snapshot[key])
+        self.assertEqual(self.chat.requests, submitted)
+        self.assertEqual(self.work, [])
+        return token, snapshot
 
     def commit(self, token, action='roll', arguments=None):
         return self.service._agent_turns.commit({'token': token, 'action': action,
@@ -106,6 +130,7 @@ class AgentTurnTests(unittest.TestCase):
 
     def test_one_action_real_tools_receipt_and_parameter_scope(self):
         s = self.service
+        s._game = fixture(actor='sakura')
         token, state = self.begin()
         self.assertEqual(state['legalAction']['action'], 'roll')
         request = self.chat.requests[0]
@@ -118,7 +143,11 @@ class AgentTurnTests(unittest.TestCase):
         before = s._game.action_seq
         first = self.commit(token)
         self.assertEqual(s._game.action_seq, before + 1)
-        self.assertEqual(first['agentDecision']['status'], 'committed')
+        next_token, next_state = self.follow(first)
+        self.assertEqual(next_state['legalAction']['pendingType'], 'land')
+        self.assertNotEqual(next_token, token)
+        with self.assertRaises(engine.GameError):
+            s._agent_turns.state({'token': token})
         frozen = copy.deepcopy(s._game.__dict__)
         second = self.commit(token)
         self.assertEqual(second, {**first, 'duplicate': True})
@@ -477,8 +506,12 @@ class AgentTurnTests(unittest.TestCase):
         s._version += 1
         self.chat.current_value.update(sessionId='session-1', characterId='character-1', idle=True)
         token, _ = self.begin()
-        self.commit(token)
+        result = self.commit(token)
         self.assertEqual(s._game.pending['type'], 'land')
+        self.follow(result)
+        # Exercise the separate UI re-request queue after explicit cancellation;
+        # a live same-chat continuation itself must never wait for host idle.
+        s.handle_action('cancel_agent', {'id': s._agent_turns.ticket['id']})
         self.chat.current_value['idle'] = False
         response = s.handle_action('act_sakura', {})
         self.assertTrue(response['ok'])
@@ -691,6 +724,9 @@ class AgentTurnTests(unittest.TestCase):
         with self.assertRaises(engine.GameError):
             self.commit(token, 'decide', {'action': 'not-a-choice'})
         self.commit(token, 'decide', {'action': '1'})
+        # End the preceding fixture's live continuation before replacing engine state.
+        if s._agent_turns.public()['status'] == 'thinking':
+            s.handle_action('cancel_agent', {'id': s._agent_turns.ticket['id']})
         # Black train uses the engine's real setup and current pending owner.
         g.pending = None
         g._walk = None

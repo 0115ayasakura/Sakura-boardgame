@@ -213,10 +213,9 @@ def main() -> None:
         assert "openBoard" in ctx.settings_actions
         assert ctx.effects, "应登记服务器清理 effect"
         descriptor, builder = ctx.context_contributions[0]
-        # 没开局时也要注入内容：必须把棋盘地址放进上下文，
-        # 否则"模型不调用工具"时她拿不到地址，只能瞎说"棋盘应该已经打开了"
+        # 明确问棋盘时，即使没开局也要提供真实地址；无关闲聊不注入。
         # （放在「+」菜单测试之前——那条会真的开一局，冷启动文案就看不到了）
-        cold = builder({})
+        cold = builder({'current_input': '请查看棋盘当前局面'})
         assert cold, "没对局时上下文不该是空的"
         cold_text = json.dumps(cold, ensure_ascii=False)
         assert "http://127.0.0.1:" in cold_text, cold_text[:200]
@@ -366,7 +365,7 @@ def main() -> None:
         assert traits["kindness"] > 0.2, traits                   # "温柔/体贴"
         policy = service._persona["policy"]
         assert policy["reserve"] >= 120, policy
-        assert "打法性格" in json.dumps(builder({}), ensure_ascii=False)
+        assert "打法性格" in json.dumps(builder({'current_input': '请查看棋盘当前局面'}), ensure_ascii=False)
 
         # 留底金：现金刚好够买、但不够"价格 + 底金"时她会忍住；够了才买
         game = engine_mod.MonopolyGame(size=12, dice_sides=6, seed=3)
@@ -642,7 +641,7 @@ def main() -> None:
         assert res["ok"] is False and "难度" in res["error"]
 
         # ---- 上下文片段 ----
-        fragment = builder({})
+        fragment = builder({'current_input': '请查看棋盘当前局面'})
         assert fragment and "【进行中的对局】" in fragment[0]["content"]
         assert "最近动态" in fragment[0]["content"]
         # 桌游引导：以前要用户手动粘进每个角色的角色卡，现在插件自己注入
@@ -659,7 +658,7 @@ def main() -> None:
         assert res["ok"] is True
         assert "先后手骰" in res["status"], res["status"]
         # 换成五子棋后，引导里只剩五子棋那一档
-        gomoku_fragment = builder({})[0]["content"]
+        gomoku_fragment = builder({'current_input': '请查看棋盘当前局面'})[0]["content"]
         assert "【落子】" in gomoku_fragment and "【处世态度】" not in gomoku_fragment, gomoku_fragment[:300]
         payload = json.loads(http_get(base + "state")[1])
         game = payload["game"]
@@ -778,7 +777,7 @@ def main() -> None:
         assert service_guide.guide_text("gomoku") == "水仙专属引导。\n只在下五子棋时说的话。", \
             service_guide.guide_text("gomoku")
         ctx_guide.tools["boardgame_start"]({"game": "monopoly"})
-        guide_fragment = ctx_guide.context_contributions[0][1]({})[0]["content"]
+        guide_fragment = ctx_guide.context_contributions[0][1]({'current_input': '请查看大富翁棋盘'})[0]["content"]
         assert "水仙专属引导" in guide_fragment and "只在下大富翁时说的话" in guide_fragment, guide_fragment[:300]
         assert "只在下五子棋时说的话" not in guide_fragment
         ctx_guide.teardown()

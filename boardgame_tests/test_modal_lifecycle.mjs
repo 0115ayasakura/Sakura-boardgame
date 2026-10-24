@@ -159,7 +159,7 @@ Object.assign(context, {
   pollBusy:false, pollAgain:false, moveRaf:0, cancelAnimationFrame(){},
   connection:{cancel(){}, state:async()=>({data:snapshotData}), schedule(){}},
   setRetryBusy(){}, syncAgentSnapshot:()=>false, syncTowerUI(){},
-  consumeItemDraw(){}, showNextCard(){}, syncOrdinaryRollButtons(){},
+  consumeItemDraw(){}, showNextCard(){}, syncOrdinaryRollButtons(){}, syncPlaySessionUI(){},
   showCashFx:items=>settlements.push(items),
   BoardConnection:{ConnectionError:class extends Error {}},
   console:{warn(){}, error(...args){throw args.at(-1);}},

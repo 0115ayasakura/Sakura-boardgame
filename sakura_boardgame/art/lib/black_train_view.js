@@ -115,6 +115,8 @@
     return null;
   }
   const lifecycles = new WeakMap();
+  // Read-only presentation phase; callers must not create another scheduler.
+  function phase(document) { return lifecycles.get(document)?.phase || 'idle'; }
   function presentationActive(document) { return !!lifecycles.get(document)?.presentation; }
   function presentationGame(document, game) {
     const l = lifecycles.get(document);
@@ -141,7 +143,7 @@
     return !!l && (!!l.queue.length || l.phase === 'waiting-entry' || l.phase === 'returning' || l.phase === 'settlement' ||
       (l.presentation && (!!l.latest?.board3d?.transitioning || l.latest?.mapReady === false)));
   }
-  function sync(options) {
+  function sync(options, internal = false) {
     const { game, names, document, board, board3d, send, gameKey, mapReady = true } = options;
     let l = lifecycles.get(document);
     if (!l) { l = { phase: 'idle', presentation: false, serverActive: false, seen: new Set(), queue: [], eventKey: '', autoTimer: null, watchTimer: null, historyLength: 0, gameKey }; lifecycles.set(document, l); }
@@ -152,11 +154,17 @@
     const reset = () => {
       cancel('autoTimer'); cancel('watchTimer'); l.phase = 'idle'; l.presentation = false; l.serverActive = false;
       l.seen.clear(); l.queue = []; l.eventKey = ''; l.historyLength = 0; l.terminalAcknowledged = false; l.terminalSeen = false; l.displayGame = null;
-      l.generation = (l.generation || 0) + 1;
+      l.generation = (l.generation || 0) + 1; l.attempt = null; l.pendingKey = '';
       modal?.classList.remove('show'); if (eventCard) eventCard.innerHTML = ''; dismissSettlement();
     };
     if (l.gameKey !== gameKey || !game || game.kind !== 'monopoly' || !game.black_train) { reset(); l.gameKey = gameKey; }
+    // Re-rendering (including onChange: render) is not an authoritative poll.
+    // Only a fresh game snapshot, or send's explicit stateChecked receipt, can
+    // unlock an uncertain action for a deliberate manual retry.
+    if (!internal && l.latest?.game !== game) l.revision = (l.revision || 0) + 1;
+    const pauseChanged = !!l.latest?.playPaused !== !!options.playPaused;
     l.latest = options;
+    if (pauseChanged) l.eventKey = null;
     const on = active(game), train = game?.black_train, history = train?.history || [];
     if (on && (!l.serverActive || history.length < l.historyLength)) {
       reset(); l.phase = 'waiting-entry';
@@ -183,7 +191,7 @@
     }
     if (participating && !on && !train?.outcome) reset();
     l.serverActive = on; l.historyLength = history.length;
-    const refresh = () => { sync(l.latest); l.latest.onChange?.(); };
+    const refresh = () => { sync(l.latest, true); l.latest.onChange?.(); };
     const watch = () => { if (l.watchTimer === null) l.watchTimer = root.setTimeout(() => { l.watchTimer = null; refresh(); }, 50); };
     if (!on && train?.outcome && l.phase === 'active' && !l.queue.length && l.terminalAcknowledged) l.phase = 'returning';
     // Preserve the train presentation until every result has been explicitly confirmed.
@@ -208,7 +216,14 @@
     board?.querySelector('.black-train-marker')?.remove();
     const deferred = typeof options.deferEvents === 'function' ? options.deferEvents() : options.deferEvents;
     const record = l.queue[0], p = on && l.phase === 'active' && pending(game);
-    const key = !deferred && !board3d?.transitioning && mapReady ? (record ? 'result:' + JSON.stringify(record) : p ? 'pending:' + JSON.stringify([p, model(game).event]) : '') : '';
+    // History length distinguishes identical consecutive events. Visual deferral
+    // does not clear request state or permit an automatic second submission.
+    const pendingKey = p && !record ? JSON.stringify([history.length, p, model(game).event]) : '';
+    if (pendingKey !== l.pendingKey) { l.pendingKey = pendingKey; l.attempt = null; }
+    if (l.attempt?.status === 'uncertain' && !l.attempt.verified && l.revision > l.attempt.revision) {
+      l.attempt.verified = true; l.eventKey = null;
+    }
+    const key = !deferred && !board3d?.transitioning && mapReady ? (record ? 'result:' + JSON.stringify(record) : p ? 'pending:' + pendingKey : '') : '';
     if (modal && eventCard && key !== l.eventKey) {
       const generation = l.generation;
       l.eventKey = key; cancel('autoTimer'); modal.classList.toggle('show', !!key);
@@ -222,16 +237,48 @@
         refresh();
       };
       else if (key && send) {
-        bind(eventCard, game, send);
-        if (p.player === 'sakura') l.autoTimer = root.setTimeout(async () => {
+        const current = () => l.generation === generation && l.pendingKey === pendingKey &&
+          l.eventKey === key && !l.latest.playPaused && !l.queue.length && active(l.latest.game) && !inputLocked(document);
+        const submit = async (action, payload) => {
+          if (!current() || l.attempt?.status === 'sending' || l.attempt?.status === 'submitted' ||
+              (l.attempt?.status === 'uncertain' && !l.attempt.verified)) return;
+          const attempt = { status: 'sending', revision: l.revision };
+          l.attempt = attempt;
+          // Invalidate cached controls immediately, including a double click
+          // arriving during a poll while the request is still in flight.
+          l.eventKey = null; refresh();
+          let response, error;
+          try { response = await send(action, payload); }
+          catch (caught) { error = caught; }
+          // A poll can commit history, replace the event or start another game
+          // before this promise settles. Such completions have no UI authority.
+          if (l.generation !== generation || l.pendingKey !== pendingKey || l.attempt !== attempt) return response;
+          if (error || response?.ok === false || response?.uncertain) {
+            attempt.status = response?.uncertain ? 'uncertain' : 'failed';
+            attempt.message = error?.message || response?.error?.message || response?.error || response?.message || '请求失败';
+            // send must return after its poll. If no authoritative sync occurred,
+            // uncertainty stays blocked until a later external sync checks state.
+            attempt.verified = response?.stateChecked === true;
+            attempt.revision = l.revision;
+          } else attempt.status = 'submitted';
+          l.eventKey = null; refresh();
+          return response;
+        };
+        const attempt = l.attempt;
+        if (attempt?.status === 'failed' || attempt?.status === 'uncertain') {
+          const checking = attempt.status === 'uncertain' && !attempt.verified;
+          eventCard.innerHTML += `<p role="alert">${attempt.status === 'uncertain' ? '提交结果不确定；先核态，不会自动重发。' : '选择失败。'}${escape(attempt.message)}${checking ? '等待刷新核态后再决定是否重试。' : '当前事件仍未提交，请手动重试。'}</p>` +
+            (!checking && p.player === 'sakura' ? '<button type="button" data-bt-retry>手动重试自动选择</button>' : '');
+          const retry = eventCard.querySelector('[data-bt-retry]');
+          if (retry) retry.onclick = () => submit('act_sakura');
+        }
+        bind(eventCard, game, submit);
+        if (options.playPaused || attempt?.status === 'sending' || attempt?.status === 'submitted' || (attempt?.status === 'uncertain' && !attempt.verified)) {
+          for (const button of eventCard.querySelectorAll('[data-bt-choice]')) button.disabled = true;
+        }
+        if (p.player === 'sakura' && !options.playPaused && !attempt) l.autoTimer = root.setTimeout(async () => {
           l.autoTimer = null;
-          if (l.generation !== generation || l.eventKey !== key || inputLocked(document) || !active(l.latest.game)) return;
-          try { await send('act_sakura'); }
-          catch (error) {
-            if (l.generation !== generation || l.eventKey !== key) return;
-            eventCard.innerHTML += `<p role="alert">自动选择失败：${escape(error?.message || error)}</p><button type="button" data-bt-retry>重试自动选择</button>`;
-            eventCard.querySelector('[data-bt-retry]').onclick = () => { l.eventKey = ''; refresh(); };
-          }
+          if (current()) await submit('act_sakura');
         }, 1400);
       }
     }
@@ -243,5 +290,5 @@
       }
     } else dismissSettlement();
   }
-  root.BlackTrainView = Object.freeze({ CATEGORIES, active, pending, model, summary, choices, actions, bind, cellLabel, eventHTML, settlementHTML, presentationActive, presentationGame, inputLocked, scheduleNotice, sync });
+  root.BlackTrainView = Object.freeze({ CATEGORIES, active, pending, model, summary, choices, actions, bind, cellLabel, eventHTML, settlementHTML, phase, presentationActive, presentationGame, inputLocked, scheduleNotice, sync });
 })(globalThis);

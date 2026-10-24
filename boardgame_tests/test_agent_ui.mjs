@@ -70,7 +70,7 @@ assert.match(html,/src="\/art\/lib\/agent_ui.js"/);
 let polledDecision='queued';
 Object.assign(s,{version:8,gameSeq:5,pollCount:1});
 Object.assign(c,{document:{querySelectorAll:()=>[]},pollBusy:false,pollAgain:false,setRetryBusy(){},location:{reload(){assert.fail('unexpected reload');}},
-  towerLocked:()=>false,consumeItemDraw(){},showNextCard(){},syncTowerUI(){},
+  towerLocked:()=>false,consumeItemDraw(){},showNextCard(){},syncTowerUI(){},syncPlaySessionUI(){},
   render(){renders++;c.renderActionBar(s.game,false);},
   BoardConnection:{ConnectionError:class extends Error{}},console:{error(...x){assert.fail(String(x));}}});
 c.BlackTrainView.scheduleNotice=()=>null;

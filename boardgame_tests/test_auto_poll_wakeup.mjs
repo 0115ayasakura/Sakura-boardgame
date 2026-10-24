@@ -29,7 +29,7 @@ function harness() {
       bind(){}, scheduleNotice:()=>null},
     setTimeout(fn, ms){const key=++id;timers.set(key,{fn,ms});return key;},
     clearTimeout(key){timers.delete(key);},
-    setRetryBusy(){}, consumeItemDraw(){}, showNextCard(){}, syncTowerUI(){}, toast(){},
+    setRetryBusy(){}, consumeItemDraw(){}, showNextCard(){}, syncTowerUI(){}, syncPlaySessionUI(){}, toast(){},
     render(){renders++;c.renderActionBar(s.game, false);},
     location:{reload(){assert.fail('unexpected reload');}},
     BoardConnection:{ConnectionError:class extends Error{}},
@@ -129,12 +129,16 @@ for(const changed of ['uiEpoch','gameSeq']) {
   await h.fire();assert.equal(h.actions.length,0,`stale ${changed} timer must not dispatch`);
 }
 console.log('PASS epoch/gameSeq isolation');
+{
+  const h=harness();h.s.playPaused=true;h.c.scheduleAutoStep(false);assert.equal(h.timers.size,0,'persisted play pause does not schedule a role action');
+  h.s.playPaused=false;h.c.scheduleAutoStep(false);assert.equal(h.timers.size,1,'explicit resume restores only the existing scheduler');h.s.playPaused=true;await h.fire();assert.equal(h.actions.length,0,'pause received after scheduling cancels delayed dispatch');
+}
 
 {
   const h=harness();h.showModal(true);h.c.buildTabs();
   const [live,other,help]=h.tabs.children;
   assert.equal(live['aria-disabled'],'false');assert.equal(other['aria-disabled'],'true');
-  assert.match(other.title,/等待/);
+  assert.equal(other.title,h.c.presentationSnapshot().reason,'disabled tab explains the actual presentation lock');
   h.showModal(false);await h.c.poll();
   assert.equal(h.renders,0);assert.equal(other['aria-disabled'],'false');assert.equal(other.title,'');
   assert.equal(h.tabs.children[1],other,'poll updates tab properties without replacing focused DOM');

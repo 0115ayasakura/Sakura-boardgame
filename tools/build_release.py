@@ -20,7 +20,7 @@ def main():
     files = sorted(p for p in PLUGIN.rglob('*') if p.is_file() and selected(p))
     assert files
     manifest = (PLUGIN/'plugin.yaml').read_text(encoding='utf-8')
-    assert 'version: 1.0.2-preview' in manifest
+    assert 'version: 1.0.3-pre' in manifest
     assert 'min_app_version: 1.3.6' in manifest
     required = {'plugin.py','agent_turns.py','agent_snapshot.py','board_server.py','board.html','board_layout.json','LICENSE','THIRD_PARTY_NOTICES.md'}
     assert required <= {p.name for p in files}

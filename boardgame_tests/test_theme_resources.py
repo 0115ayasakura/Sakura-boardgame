@@ -183,8 +183,11 @@ class ThemeResourceTests(unittest.TestCase):
             handler.do_GET()
             self.assertEqual(len(responses), n)
 
-    def test_checkout_package_hashes_match_design_sources(self):
-        manifest = packager.package_theme(check=True)
+    def test_checkout_distribution_manifest_matches_packaged_assets(self):
+        # The release intentionally ships size-optimized assets, not private/raw
+        # design sources. Validate every distributed byte against its manifest;
+        # temporary fixtures above still test exact source copying/check mode.
+        manifest = validate_theme_package(ROOT / "sakura_boardgame")
         self.assertEqual(len(manifest["files"]), 6)
         for entry in manifest["files"].values():
             self.assertGreater(entry["size"], 0)

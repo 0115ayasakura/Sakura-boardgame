@@ -700,6 +700,17 @@
   .bt-selection, .bt-effect { margin:14px 0; line-height:1.7; white-space:pre-wrap; }
   .bt-effect { padding:12px; background:#171b28; border-radius:8px; color:#efdcab; }
 </style>
+<style>
+#play-session {position:fixed;right:12px;bottom:12px;z-index:1100;max-width:min(420px,calc(100vw - 24px));padding:10px 14px;border-radius:14px;background:var(--panel);color:var(--ink);border:1px solid var(--panel-line);box-shadow:var(--shadow);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+#play-session button,#card-continue{border:1px solid var(--panel-line);border-radius:999px;background:var(--bg);color:var(--ink);padding:7px 14px;font:inherit;font-size:13px;cursor:pointer}
+#play-session button:hover,#card-continue:hover{border-color:var(--gold)}
+#play-session button:focus-visible,#card-continue:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+#play-session button:disabled{opacity:.55;cursor:wait}
+#app[hidden]{display:none}
+body.play-away .modal{visibility:hidden}
+#play-session[hidden]{display:none} #play-wait {font-size:12px;flex-basis:100%;color:var(--ink-dim)}
+#card-continue{margin-top:14px} #card-count{font-size:12px;color:var(--ink-dim);margin-top:8px}
+</style>
 </head>
 <body>
 <div id="app">
@@ -729,12 +740,21 @@
     </aside>
   </main>
 </div>
+<section id="play-session" aria-label="对局暂停与等待状态" hidden>
+<button id="play-pause" type="button" onclick="setPlayPaused(true)">暂停并离开</button>
+<button id="play-resume" type="button" onclick="setPlayPaused(false)" hidden>继续对局</button>
+<button id="play-hide" type="button" onclick="document.getElementById('app').hidden=true;document.body.classList.add('play-away');syncPlaySessionUI()" hidden>收起棋盘</button>
+<button id="play-show" type="button" onclick="document.getElementById('app').hidden=false;document.body.classList.remove('play-away');syncPlaySessionUI()" hidden>查看棋盘</button>
+<span id="play-wait" role="status" aria-live="polite"></span>
+<button id="play-check" type="button" onclick="poll()" hidden>检查连接</button>
+</section>
 <div class="modal" id="black-train-event-modal" role="dialog" aria-modal="true" aria-label="黑列车事件"><div class="e-card" id="black-train-event-card" aria-live="polite"></div></div>
 <div class="modal" id="black-train-result" role="dialog" aria-modal="true" aria-label="黑列车收益结算" hidden></div>
-<div class="modal" id="card-modal"><div class="e-card" id="e-card">
+<div class="modal" id="card-modal" role="dialog" aria-modal="true" aria-labelledby="e-card-title"><div class="e-card" id="e-card">
   <div class="from" id="e-card-from">事件卡</div>
   <div class="title" id="e-card-title"></div>
   <div class="flavor" id="e-card-flavor"></div>
+  <div id="card-count"></div><button id="card-continue" type="button" hidden>已了解，继续</button>
 </div></div>
 <div class="modal" id="dice-modal"><div class="e-card dice-pop" id="dice-pop">
   <div class="from">骰子</div>
@@ -942,20 +962,24 @@ const connection = BoardConnection.createClient({onStatus(status) {
 }});
 async function api(action, args = {}) {
   const agent = state.agentUI;
+  if (state.playPaused && ['roll','decide','act_sakura','agent_fallback','place','undo','auto','tower_step','tower_finish'].includes(action)) return {ok:false, playPaused:true, error:'对局已暂停，请先继续对局。'};
+  const playControl = action === 'pause_play' || action === 'resume_play';
   const cancelling = action === 'cancel_agent';
+  const fallback = action === 'agent_fallback';
+  if (fallback && (!agent || AgentUI.fallbackId(agent) !== args.id)) return {ok:false, agentLocked:true};
   // Cancellation revokes only the matching decision, not a played move or speech.
   // It must remain reachable even under a presentation/return lock.
   if (cancelling) {
     if (!agent || AgentUI.cancelId(agent) !== args.id) return {ok:false, agentLocked:true};
-  } else {
+  } else if (!playControl) {
     if (agent && (AgentUI.busy(agent) || (action === 'act_sakura' && agent.paused))
-        && ['roll','decide','act_sakura','place','undo','start','black_train_start','tower_step','tower_finish'].includes(action)) {
+        && ['roll','decide','act_sakura','agent_fallback','place','undo','start','black_train_start','tower_step','tower_finish'].includes(action)) {
       return {ok:false, agentLocked:true};
     }
     // Client presentation may outlive server active=false.
     if (!presentationSnapshot().allows('api', action)) return { ok:false, presentationLocked:true };
   }
-  const tracked = action === 'act_sakura' || cancelling;
+  const tracked = action === 'act_sakura' || cancelling || fallback;
   const epoch = tracked ? uiEpoch : null, gameSeq = state.gameSeq;
   const ui = tracked ? (state.agentUI || (state.agentUI = AgentUI.create(gameSeq))) : agent;
   if (tracked) {
@@ -966,9 +990,18 @@ async function api(action, args = {}) {
   let data;
   try {
     data = await connection.action(action, args);
+    if (playControl && data.ok && gameSeq === state.gameSeq) {
+      state.playPaused = !!data.playPaused;
+      clearTimeout(autoTimer); autoTimer = null;
+      if (state.agentUI) {
+        if (Object.hasOwn(data, 'agentDecision')) AgentUI.sync(state.agentUI, {gameSeq, decisionDriver:state.agentUI.driver, agentDecision:data.agentDecision});
+        AgentUI.retry(state.agentUI);
+      }
+    }
     if (tracked && epoch === uiEpoch && gameSeq === state.gameSeq && state.agentUI === ui) {
       if (Object.hasOwn(data, 'agentDecision')) AgentUI.sync(ui, {gameSeq, decisionDriver:ui.driver, agentDecision:data.agentDecision});
       if (!data.ok) AgentUI.reject(ui, data.error);
+      else if (fallback) AgentUI.retry(ui); // Explicit takeover acknowledges the revoked Agent request.
     }
     if (!data.ok && (!tracked || (epoch === uiEpoch && gameSeq === state.gameSeq && state.agentUI === ui))) {
       toast(data.error || "操作失败", data.uncertain ? 7000 : 2600);
@@ -986,6 +1019,47 @@ async function api(action, args = {}) {
     }
   }
 }
+let playControlBusy = false;
+const playWaitClock = {key:'', since:0};
+async function setPlayPaused(paused) {
+  if (playControlBusy || !state.game) return;
+  playControlBusy = true; syncPlaySessionUI();
+  try {
+    const result = await api(paused ? 'pause_play' : 'resume_play');
+    await poll();
+    if (result.ok && state.playPaused === paused) {
+      if (paused) toast('对局已暂停并保存，可收起或关闭页面；语音可能继续。', 5000);
+      else { document.getElementById('app').hidden = false; document.body.classList.remove('play-away'); if (state.agentUI) AgentUI.retry(state.agentUI); }
+    }
+  } finally { playControlBusy = false; syncPlaySessionUI(); }
+}
+function syncPlaySessionUI() {
+  const panel = $('#play-session'); if (!panel) return;
+  panel.hidden = !state.game; if (!state.game) return;
+  if (!state.playPaused) { document.getElementById('app').hidden = false; document.body.classList.remove('play-away'); }
+  const flow = presentationSnapshot(), agent = state.agentUI;
+  const phase = BlackTrainView.phase?.(document) || '';
+  const phases = {'waiting-entry':'等待前序结果确认', active:'请确认列车事件结果', returning:'正在返程，等待地图切换', settlement:'请确认探险收益'};
+  let label = state.playPaused ? '已暂停并保留进度，继续后处理原待选项' :
+    AgentUI.busy(agent) ? (agent.decision?.status === 'queued' ? '等待聊天空闲' : agent.cancelling ? '正在请求取消' : '角色正在决策') :
+    flow.blackLocked ? (phases[phase] || flow.reason || '等待列车呈现完成') :
+    (flow.phase === 'black-active' ? '' : flow.modal && !flow.ordinaryModal && !flow.blackLocked ? '请选择列车事件选项' : flow.reason) || (agent?.paused ? agent.error : '');
+  const key = state.gameSeq + ':' + (state.playPaused ? 'paused' : agent?.decision?.id || '') + ':' + label;
+  if (playWaitClock.key !== key) { playWaitClock.key = key; playWaitClock.since = Date.now(); }
+  const seconds = Math.max(0, Math.floor((Date.now() - playWaitClock.since) / 1000));
+  const needsInput = !AgentUI.busy(agent) && (flow.modal || flow.tower) && !flow.moving && !flow.transitioning && !flow.mounting;
+  const waiting = !!label && !state.playPaused && !needsInput;
+  $('#play-wait').textContent = label ? label + (waiting ? ` · 已等待 ${seconds} 秒` : '') : '';
+  $('#play-pause').hidden = !!state.playPaused || !!state.game.winner || !!state.game.draw;
+  $('#play-resume').hidden = !state.playPaused;
+  $('#play-hide').hidden = !state.playPaused || document.getElementById('app').hidden;
+  $('#play-show').hidden = !document.getElementById('app').hidden;
+  $('#play-pause').disabled = $('#play-resume').disabled = playControlBusy;
+  $('#play-check').hidden = !waiting || seconds < 15;
+  for (const button of document.querySelectorAll('#action-bar button:disabled')) {
+    if (flow.reason) { button.title = flow.reason; button.setAttribute('aria-describedby','play-wait'); }
+  }
+}
 function syncAgentSnapshot(data) {
   const ui = state.agentUI || (state.agentUI = AgentUI.create(data.gameSeq ?? state.gameSeq));
   return AgentUI.sync(ui, data);
@@ -994,9 +1068,17 @@ async function requestSakuraAction() {
   const ui = state.agentUI || (state.agentUI = AgentUI.create(state.gameSeq));
   const game = state.game;
   if (!game || game.winner || game.draw || (game.pending?.player || game.turn) !== 'sakura'
-      || AgentUI.busy(ui) || !presentationSnapshot().allows('api', 'act_sakura')) return;
+       || state.playPaused || AgentUI.busy(ui) || !presentationSnapshot().allows('api', 'act_sakura')) return;
   AgentUI.retry(ui); // Only an explicit user request clears a failure/cancel latch.
   await api('act_sakura');
+  await poll();
+}
+async function fallbackAgentDecision(id) {
+  const ui = state.agentUI, game = state.game;
+  if (!id || AgentUI.fallbackId(ui) !== id || !game || game.winner || game.draw
+      || (game.pending?.player || game.turn) !== 'sakura'
+      || !presentationSnapshot().allows('api', 'agent_fallback')) return;
+  await api('agent_fallback', {id});
   await poll();
 }
 async function cancelAgentDecision(id) {
@@ -1875,6 +1957,7 @@ async function poll() {
     showNextCard();
     if (needRender || opponentChanged) render();
     syncOrdinaryRollButtons(); // Local presentation locks can change without a server version.
+    syncPlaySessionUI();
     // 渲染完再放塔内动画：render() 会重建 board-wrap 里的东西，先放就被抹掉了
     syncTowerUI();
     // Local presentation can unlock without a new version or render. Reconcile
@@ -1887,6 +1970,7 @@ async function poll() {
       for (const c of data.game.cells) state.prevOwners[c.id] = c.owner || null;
     }
     state.pollCount += 1;
+    return true; // A fresh authoritative snapshot was successfully applied.
   } catch (e) {
     if (!(e instanceof BoardConnection.ConnectionError)) console.error("棋盘状态更新失败", e);
   } finally {
@@ -2031,6 +2115,8 @@ function consumeItemDraw(info, moveIncoming = false) {
 }
 function showCard(title, flavor, isWin, kind = '') {
   cardQueue.push([title, flavor, isWin, kind]);
+  const count = $('#card-count');
+  if ($('#card-modal').classList.contains('show') && count) count.textContent = `之后还有 ${cardQueue.length} 条结果`;
   if (!$("#card-modal").classList.contains("show")) showNextCard();
 }
 function showNextCard() {
@@ -2047,8 +2133,14 @@ function showNextCard() {
   modal.classList.remove("show");
   void modal.offsetWidth;
   modal.classList.add("show");
+  const generation = modal.cardGeneration = (modal.cardGeneration || 0) + 1;
   clearTimeout(cardTimer);
-  cardTimer = setTimeout(closeCard, isWin ? 5200 : 4200);
+  const important = !!(isWin || kind === 'item-draw' || /¥|票根|收益|车票|破产|获得|失去|抵押|买入|卖出|升级|列车/.test(title + ' ' + flavor) || String(flavor || '').length > 90);
+  modal.requiresConfirm = important;
+  const confirm = $('#card-continue'), count = $('#card-count');
+  if (count) count.textContent = cardQueue.length ? `之后还有 ${cardQueue.length} 条结果` : '';
+  if (confirm) { confirm.hidden = !important; confirm.onclick = event => { event.stopPropagation(); if (modal.cardGeneration === generation && modal.classList.contains('show')) closeCard(); }; }
+  if (!important) cardTimer = setTimeout(() => { if (modal.cardGeneration === generation) closeCard(); }, 4200);
 }
 function closeCard() {
   clearTimeout(cardTimer); cardTimer = null;
@@ -2354,7 +2446,7 @@ function buildTabs() {
     // aria-disabled describes the current lock; the fresh guard enforces it.
     const locked = kind !== currentKind() && tabSwitchLocked();
     btn.setAttribute('aria-disabled', String(locked));
-    if (locked) btn.title = '请等待移动、弹窗与场景切换完成';
+    if (locked) btn.title = presentationSnapshot().reason || '请先完成当前呈现';
     btn.onclick = () => {
       if (kind === currentKind() || tabSwitchLocked()) return;
       state.tab = kind; render();
@@ -2373,7 +2465,7 @@ function syncTabLocks() {
   document.querySelectorAll('#tabs [data-game-kind]').forEach(btn => {
     const blocked = btn.dataset.gameKind !== kind && locked;
     btn.setAttribute('aria-disabled', String(blocked));
-    btn.title = blocked ? '请等待移动、弹窗与场景切换完成' : '';
+    btn.title = blocked ? (presentationSnapshot().reason || '请先完成当前呈现') : '';
   });
 }
 function currentKind() {
@@ -2386,11 +2478,11 @@ function ordinaryPresentationPending() {
   return !presentationSnapshot().allows('entry');
 }
 function syncBlackTrainUI() {
-  BlackTrainView.sync({ game: state.game, gameKey: state.gameSeq, names: NAMES, document, board: boardWrap, board3d: mapState.board3d,
+  BlackTrainView.sync({ game: state.game, playPaused:!!state.playPaused, gameKey: state.gameSeq, names: NAMES, document, board: boardWrap, board3d: mapState.board3d,
     mapReady: !mapState.glMounting && (!mapState.use3D || !!mapState.board3d),
     deferEntry: ordinaryPresentationPending,
     deferEvents: () => boardMoveHeld() || $("#dice-modal").classList.contains("show") || $("#card-modal").classList.contains("show"),
-    onChange: render, send: async (action, payload) => { await api(action, payload); await poll(); } });
+    onChange: render, send: async (action, payload) => { const result = await api(action, payload); const checked = await poll(); return {...result, stateChecked:checked === true}; } });
 }
 function render() {
   // Ingest terminal history before ordinary action bars/automatic turns can run.
@@ -3563,20 +3655,22 @@ function renderActionBar(game, demo) {
   const bar = $("#action-bar");
   if (!bar) return;
   const kind = currentKind();
+  if (!demo && state.playPaused) { clearTimeout(autoTimer); autoTimer = null; bar.innerHTML = '<span class="hint" role="status">对局已暂停，进度已保留。点击「继续对局」恢复。</span>'; return; }
   const agent = state.agentUI;
   const driverLabel = agent?.driver === 'algorithm' ? '算法模式（非 Agent）' : 'Agent 决策';
   const agentTurn = (game.pending?.player || game.turn) === 'sakura';
   if (!demo && agent && (AgentUI.busy(agent) || (agent.paused && agentTurn && !game.winner && !game.draw))) {
     clearTimeout(autoTimer); autoTimer = null;
-    const busy = AgentUI.busy(agent), cancellable = AgentUI.cancelId(agent);
+    const busy = AgentUI.busy(agent), cancellable = AgentUI.cancelId(agent), fallback = AgentUI.fallbackId(agent);
     bar.innerHTML = `<span class="hint" role="status">${driverLabel} · ${busy ? (agent.cancelling ? '正在请求取消…' : agent.decision?.status === 'queued' ? '等待聊天空闲…' : '正在思考，等待一次决策完成…') : esc(agent.error || '自动行动已暂停，请手动重试')}</span>` +
       (cancellable ? ` <button class="ghost" data-agent-cancel="${encodeURIComponent(cancellable)}" onclick="cancelAgentDecision(decodeURIComponent(this.dataset.agentCancel))" title="仅撤销当前决策许可；不保证停止语音，不能撤回已走的棋">取消本次决策</button>` : '') +
-      (!busy ? ` <button class="pink" onclick="requestSakuraAction()" ${presentationSnapshot().allows('api', 'act_sakura') ? '' : 'disabled'}>手动重试${NAMES.sakura}行动</button>` : '');
+      (!busy ? ` <button class="pink" onclick="requestSakuraAction()" ${presentationSnapshot().allows('api', 'act_sakura') ? '' : 'disabled'}>手动重试${NAMES.sakura}行动</button>` : '') +
+      (fallback ? ` <button class="ghost" data-agent-fallback="${encodeURIComponent(fallback)}" onclick="fallbackAgentDecision(decodeURIComponent(this.dataset.agentFallback))" ${presentationSnapshot().allows('api', 'agent_fallback') ? '' : 'disabled'} title="仅由算法完成当前动作，不切换后续的 Agent 模式">由算法代操作</button>` : '');
     return;
   }
   if (!demo && presentationSnapshot().blackLocked) {
     clearTimeout(autoTimer); autoTimer = null;
-    bar.innerHTML = '<span class="hint">请先确认列车事件结果，等待返程与收益结算完成</span>';
+    bar.innerHTML = `<span class="hint" role="status">${esc(presentationSnapshot().reason || '请先确认列车事件结果，等待返程与收益结算完成')}</span>`;
     return;
   }
   if (!demo && BlackTrainView.active(game)) {
@@ -3665,6 +3759,7 @@ function syncOrdinaryRollButtons() {
   const game = state.game;
   const reason = !game || game.kind !== 'monopoly' || game.turn !== 'user' || game.winner || game.draw
     ? '尚未轮到你投掷'
+    : state.playPaused ? '对局已暂停，请先继续对局'
     : game.pending || game.walk ? '请先完成当前行动'
     : presentationSnapshot().reason;
   if (normal) { normal.disabled = !!reason; normal.title = reason || '随机投掷，不消耗自定义骰'; }
@@ -3693,7 +3788,8 @@ async function useCustomDie() {
 /* ---------- 自动模式：轮到她就自动走完（只有开/关两种） ---------- */
 function syncAutoModeSnapshot(data) {
   const mode = data.autoMode || 'off';
-  const changed = state.autoMode !== mode;
+  let changed = state.autoMode !== mode;
+  if (Object.hasOwn(data, 'playPaused')) { changed = changed || state.playPaused !== data.playPaused; state.playPaused = !!data.playPaused; }
   state.autoMode = mode;
   return changed;
 }
@@ -3721,7 +3817,7 @@ function autoCanRun(demo) {
         : pending.type === 'route' && walk?.player === 'sakura'
           && Number.isInteger(walk.steps_left) && walk.steps_left > 0
           && pending.steps_left === walk.steps_left));
-  return !!(game && !game.winner && !game.draw && !demo && (state.autoMode || 'off') === 'hers'
+  return !!(game && !state.playPaused && !game.winner && !game.draw && !demo && (state.autoMode || 'off') === 'hers'
     && !(state.agentUI && (AgentUI.busy(state.agentUI) || state.agentUI.paused))
     && (!flow.blackActive || blackRole)
     && flow.allows('auto', flow.blackActive ? 'black-roll' : '')
@@ -3946,9 +4042,9 @@ function openHelp() {
     <p>棋盘上方的 <b>自动模式</b> 按钮是开关（只有开/关两种）：开着的时候轮到她会逐个请求决策。
     默认由 <b>Agent</b> 决定行动；插件设置选用算法时，界面会标明<b>算法模式（非 Agent）</b>，不会因 Agent 失败而自动回退算法。
     每次提交后等待决策完成，再等骰子、移动与事件确认后继续；每步至少间隔 1.8 秒。
-    失败、超时、宿主忙或取消后会暂停，必须手动重试，不会反复请求。取消只撤销本次决策许可，不保证停止语音，也不能撤回已走的棋。</p>
-    <p>「一次把整局推完」不在这个按钮里——那是聊天里的指令（对她说「你们自己下一局」），
-    适合你只想看个结果的时候；常驻模式只保留"替她走她的回合"，免得一局在你不注意时被快进掉。</p>
+    失败、超时或取消后会暂停，可手动重试；失败或过期时也可选择「由算法代操作」完成当前动作，不切换后续模式。等待聊天空闲不会反复提交。取消只撤销本次决策许可，不保证停止语音，也不能撤回已走的棋。</p>
+    <p>「暂停并离开」保留当前棋局并停止后续行动，确认保存成功后可收起或关闭页面。回来点击「继续对局」，仍从原来的待选项继续，不会重开。已经播放或排队的语音可能继续。</p>
+    <p>自动模式只处理角色自己的行动，不会替玩家推进整局。连续选路、买地等属于同一次掷骰行动，会先选择完成再统一简短解说。</p>
     <h4>悔棋</h4>
     <p>仅五子棋提供棋盘上方的 <b>「↩ 悔棋」</b>，可<b>撤回一手</b>；大富翁不显示悔棋按钮。
     快照只保留本进程最近的若干步（重启 Sakura 之后就没了），退回也会写进对局记录。</p>
@@ -3972,7 +4068,7 @@ function openHelp() {
     <h4>${naviName} 事件卡图鉴（共 ${state.cards.length} 张）</h4>
     <div class="cards-grid">${cards}</div>
     <h4>五子棋</h4>
-    <p>点击棋盘交叉点落子；${NAMES.sakura}的棋由内置 AI 按当前难度代算，落子理由会写进对局记录。开局时各掷一次骰子决定先后手。</p>
+    <p>点击棋盘交叉点落子；${NAMES.sakura}默认通过 Agent 选择落点，显式算法模式才由内置 AI 按难度代算。开局时各掷一次骰子决定先后手。</p>
     <p style="margin-top:10px"><button style="border:none;border-radius:999px;padding:8px 22px;background:var(--blue);color:#fff;font-weight:700;cursor:pointer" onclick="document.getElementById('help-modal').classList.remove('show')">知道了</button></p>`;
   $("#help-modal").classList.add("show");
   state.helpOpen = true;
@@ -3981,7 +4077,7 @@ $("#help-modal").addEventListener("click", (e) => {
   if (e.target.id === "help-modal") e.currentTarget.classList.remove("show");
 });
 // NAVI 事件弹窗：点击画面任意处（含背板）提前关闭
-$("#card-modal").addEventListener("click", closeCard);
+$("#card-modal").addEventListener("click", () => { if (!$("#card-modal").requiresConfirm) closeCard(); });
 // 选棋子弹窗：点空白处 = 保持原样关掉（存下来的还是上一次的选择）
 $("#piece-modal").addEventListener("click", (e) => {
   if (e.target.id === "piece-modal") e.currentTarget.classList.remove("show");

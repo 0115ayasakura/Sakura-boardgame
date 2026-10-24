@@ -60,15 +60,25 @@ class ChatBoardContextTests(unittest.TestCase):
         self.assertEqual(len(self.context.context_contributions), 1)
         self.assertEqual(descriptor['providerId'], 'local.sakura.boardgame.state')
 
-    def fragment(self, game):
+    def request_fragments(self, game, request):
         self.service._game = game
         before = copy.deepcopy(game.to_dict()) if game is not None else None
         version = self.service._version
         # Reading chat context must neither query token tools nor mutate the game.
         with patch.object(self.service._agent_turns, 'state', side_effect=AssertionError('token query')), \
              patch.object(self.service._agent_turns, 'commit', side_effect=AssertionError('token commit')), \
+             patch.object(self.service, 'state', side_effect=AssertionError('state tool')), \
              patch.object(self.service, 'start', side_effect=AssertionError('new game')):
-            fragments = self.builder({})
+            fragments = self.builder(request)
+        self.assertEqual(self.service._version, version)
+        self.assertEqual(game.to_dict() if game is not None else None, before)
+        self.assertIs(self.service._game, game)
+        self.assertFalse(self.service._snapshots)
+        self.assertFalse(self.context.mobile_calls)
+        return fragments
+
+    def fragment(self, game, current_input='请复盘当前棋盘，并给我棋盘地址。', **request):
+        fragments = self.request_fragments(game, {'current_input': current_input, **request})
         self.assertEqual(len(fragments), 1)
         self.assertEqual(fragments[0]['id'], plugin._FRAGMENT_ID)
         text = fragments[0]['content']
@@ -78,12 +88,77 @@ class ChatBoardContextTests(unittest.TestCase):
                      '仅当本次棋盘主动决策请求含有效token', '没有token不得调用',
                      '不填none/null', '不猜测、不沿用旧token'):
             self.assertIn(rule, text)
-        self.assertEqual(self.service._version, version)
-        self.assertEqual(game.to_dict() if game is not None else None, before)
-        self.assertIs(self.service._game, game)
-        self.assertFalse(self.service._snapshots)
-        self.assertFalse(self.context.mobile_calls)
         return text
+
+    def test_unrelated_input_never_injects_even_with_saved_game_and_open_page(self):
+        games = (None, engine.MonopolyGame(size=16, dice_sides=6, seed=1),
+                 won_game('sakura'), drawn_game())
+        requests = ({}, {'current_input': ''}, {'current_input': '   '},
+                    {'current_input': None}, {'current_input': '今天晚饭吃什么？'},
+                    {'current_input': '选择继续扮演这个角色，讨论理财收益。'},
+                    {'current_input': 'Please continue discussing investment returns.'},
+                    {'current_input': 'Discuss the bodice design and motherboard choice.'},
+                    {'source': 'event', 'event_type': 'reminder_due',
+                     'current_input': '该喝水了。'},
+                    {'source': 'event', 'event_type': 'screen_awareness', 'current_input': ''})
+        for game in games:
+            # Round-trip an actual isolated save, not merely an in-memory active flag.
+            if game is not None:
+                self.service._game = game
+                self.service._save()
+                game = self.service._load()
+            self.service._server._last_visible_page = 10**12
+            for request in requests:
+                with self.subTest(kind=getattr(game, 'kind', None),
+                                  winner=getattr(game, 'winner', None), request=request):
+                    with patch.object(self.service, 'context_fragment',
+                                      wraps=self.service.context_fragment) as snapshot:
+                        self.assertEqual(self.request_fragments(game, request), [])
+                    snapshot.assert_not_called()
+
+    def test_recent_messages_and_other_request_metadata_do_not_activate_context(self):
+        game = engine.GomokuGame(first='user', seed=1)
+        history = [{'role': 'user', 'content': '来一局五子棋，给我棋盘地址。'},
+                   {'role': 'assistant', 'content': '（桌游播报：上次已落子）'},
+                   {'role': 'user', 'content': '【棋盘插件主动决策请求，不是用户消息】'}]
+        for step in (0, 2):
+            for current in ('', '你还记得昨天我们一起度过的时光吗？'):
+                with self.subTest(step=step, current=current):
+                    request = {'current_input': current, 'source': 'chat', 'step_index': step,
+                               'recent_messages': history, 'event_type': 'boardgame',
+                               'available_tools': ['boardgame_agent_state', 'boardgame_start']}
+                    self.assertEqual(self.request_fragments(game, request), [])
+
+    def test_current_board_questions_keep_complete_snapshot_at_every_step(self):
+        game = won_game('sakura')
+        for current in ('桌游怎么玩？', '棋盘地址在哪？', '复盘这局五子棋', '开一局大富翁',
+                        '黑列车怎么躲？', '帮我掷骰', '票根怎么用？',
+                        'How do we play gomoku?', 'Show the board game rules.',
+                        'Where is the Monopoly board?', 'Roll the dice, please.'):
+            for step in (0, 2):
+                with self.subTest(current=current, step=step):
+                    text = self.fragment(game, current, source='chat', step_index=step)
+                    self.assertEqual(text, self.service.context_fragment())
+                    self.assertIn('你赢了，用户输了', text)
+
+    def test_current_monopoly_question_keeps_guide_map_and_recent_dynamics(self):
+        game = engine.MonopolyGame(size=16, dice_sides=6, seed=1)
+        self.service._log.append('本局测试动态：刚才经过起点。')
+        text = self.fragment(game, '帮我解释大富翁当前玩法和局势。')
+        self.assertEqual(text, self.service.context_fragment())
+        self.assertIn('【桌游引导】', text)
+        self.assertIn(game.render(), text)
+        self.assertIn('最近动态：本局测试动态：刚才经过起点。', text)
+
+    def test_current_plugin_markers_keep_snapshot_for_notifications_and_decisions(self):
+        game = engine.GomokuGame(first='sakura', seed=1)
+        for source in ('chat', 'event'):
+            for current in ('（桌游播报：这一步操作已经由程序执行完毕。）',
+                            '【棋盘插件主动决策请求，不是用户消息】token=offline-test'):
+                with self.subTest(source=source, current=current):
+                    text = self.fragment(game, current, source=source, event_type='host_message')
+                    self.assertEqual(text, self.service.context_fragment())
+                    self.assertIn('【桌游引导】', text)
 
     def test_sakura_winner_is_you_not_user(self):
         text = self.fragment(won_game('sakura'))
@@ -140,7 +215,7 @@ class ChatBoardContextTests(unittest.TestCase):
         for name in ('boardgame_agent_state', 'boardgame_agent_commit'):
             with self.subTest(tool=name):
                 spec = self.context.tool_descriptors[name]
-                for rule in ('仅当本次棋盘主动决策请求含有效token',
+                for rule in ('仅当本次棋盘主动决策请求或commit返回的continuation含有效token',
                              '普通聊天/复盘没有token不得调用', '不填none/null',
                              '不猜测、不沿用旧token', '不为核实状态调用'):
                     self.assertIn(rule, spec['description'])
