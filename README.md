@@ -63,7 +63,7 @@
 
 ## 开发
 
-[跨插件开发经验与验收清单](<docs/sakura-plugin-development-lessons.md>) 整理了本项目的授权执行、异步事务、上下文隔离、呈现状态机和市场发布经验；[v1.0.3-pre 更新说明](<docs/releases/v1.0.3-pre.md>) 说明本次发行边界。
+[v1.0.3-pre 更新说明](<docs/releases/v1.0.3-pre.md>) 说明本次发行边界。
 
 源码目录 `sakura_boardgame/`，回归目录 `boardgame_tests/`。Python 建议使用 `-B` 避免生成缓存。可分别运行：
 

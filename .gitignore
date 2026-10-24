@@ -9,3 +9,7 @@ release-assets/
 sakura_boardgame/config.json
 sakura_boardgame/state.json
 ?*.zip
+
+# Internal development notes are local-only.
+/docs/sakura-plugin-development-lessons.md
+/private/
