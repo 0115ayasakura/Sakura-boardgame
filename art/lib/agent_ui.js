@@ -30,5 +30,9 @@
   }
   function reject(ui, error) { ui.paused = true; ui.error = error || 'Agent 请求未完成，请确认状态后手动重试'; }
   function cancelId(ui) { return ui && !ui.cancelling && BUSY.has(ui.decision?.status) ? ui.decision.id : null; }
-  root.AgentUI = Object.freeze({create, busy, sync, retry, reject, cancelId});
+  function fallbackId(ui) {
+    return ui && ui.driver === 'agent' && !busy(ui) && ['expired', 'failed'].includes(ui.decision?.status)
+      ? ui.decision.id : null;
+  }
+  root.AgentUI = Object.freeze({create, busy, sync, retry, reject, cancelId, fallbackId});
 })(globalThis);

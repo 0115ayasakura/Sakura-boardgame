@@ -5,6 +5,7 @@ import copy
 from functools import wraps
 import os
 import random
+import re
 import threading
 import tempfile
 import time
@@ -117,15 +118,32 @@ def serialized_action(method):
             coordinator = getattr(self, "_agent_turns", None)
             agent_checkpoint = coordinator.checkpoint() if coordinator and outer else None
             metadata = kwargs.get("metadata") if method.__name__ == "handle_action" else None
+            def invoke():
+                # One gate covers HTTP, legacy tools and nested Agent/algorithm
+                # actions under the same lock/rollback boundary. Explicit new
+                # games and end remain available; settings are not game moves.
+                name = method.__name__
+                gameplay = name in {"roll", "decide", "place", "tower_action", "sakura_action",
+                                    "auto", "undo", "_commit_agent"}
+                action = args[0] if args else kwargs.get("action")
+                if name == "handle_action":
+                    gameplay = action in {"roll", "decide", "place", "tower_step", "tower_finish",
+                                          "act_sakura", "auto", "undo", "agent_fallback", "black_train_start"}
+                if gameplay:
+                    self._guard_playing()
+                return method(self, *args, **kwargs)
+
             try:
-                response = action_protocol.run(self, lambda: method(self, *args, **kwargs),
+                response = action_protocol.run(self, invoke,
                                                metadata=metadata,
                                                action=args[0] if method.__name__ == "handle_action" and args else kwargs.get("action"),
                                                arguments=args[1] if method.__name__ == "handle_action" and len(args) > 1 else kwargs.get("arguments"))
                 rejected = isinstance(response, dict) and response.get("ok") is False
                 if rejected and agent_checkpoint is not None:
                     coordinator.restore(agent_checkpoint)
-                dispatch = bool(outer and coordinator and not rejected)
+                control = method.__name__ == "handle_action" and (
+                    (args[0] if args else kwargs.get("action")) in {"pause_play", "resume_play"})
+                dispatch = bool(outer and coordinator and not rejected and not control)
             except Exception as error:
                 if agent_checkpoint is not None:
                     coordinator.restore(agent_checkpoint)
@@ -162,6 +180,7 @@ class BoardgameService:
         # 先备好日志/事件这些 _load 可能要用到的东西（作废旧存档时要在网页上说一句）
         self._version = 1
         self._game_seq = 0
+        self._play_paused = False
         action_protocol.initialize(self)
         self._log: deque[str] = deque(maxlen=LOG_LIMIT)
         self._lines_written = 0          # _log 会滚动，按"累计写过多少行"来取新增部分（见 _story_since）
@@ -208,6 +227,10 @@ class BoardgameService:
     def agent_shop_items() -> dict[str, Any]:
         return game_shop_items()
 
+    def _guard_playing(self) -> None:
+        if self._play_paused:
+            raise GameError("对局已暂停，请先继续游戏；也可以显式结束或重开一局。")
+
     def _guard_agent_seat(self, player: str) -> None:
         if player == "sakura" and self.decision_driver() == "agent" and not self._agent_applying:
             raise GameError("真实Agent模式只能用本次token调用boardgame_agent_commit；不会由算法代走。")
@@ -229,6 +252,25 @@ class BoardgameService:
         if action in ("tower_step", "tower_finish"):
             return self.tower_action(values, finish=action == "tower_finish")
         raise GameError("不支持的Agent动作。")
+
+    def _execute_algorithm_action(self, legal: Mapping[str, Any]) -> dict[str, Any]:
+        """Execute one authorized fallback using the ordinary algorithm policies."""
+        action = legal['action']
+        values: dict[str, Any] = {'player': 'sakura', '_automatic': True}
+        if action == 'place':
+            # No coordinates: place() selects the configured AI level/persona.
+            return self.place(values)
+        if action == 'roll':
+            return self.roll(values)
+        if action == 'decide':
+            choice = self._pick_pending_action(self._game)
+            note = self._decision_note(self._game, choice)
+            result = self.decide({**values, 'action': choice})
+            self._touch(None, f"她的判断：{note}")
+            return result
+        if action in ('tower_step', 'tower_finish'):
+            return self.tower_action({**values, **legal['arguments']}, finish=action == 'tower_finish')
+        raise GameError('当前动作没有可用的算法代操作。')
 
     # ---- 对手身份（名字 / 立绘跟随当前角色）--------------------------
 
@@ -823,6 +865,7 @@ class BoardgameService:
             # 悔棋：还有没有快照可退（网页据此决定要不要显示「悔棋」按钮）
             "canUndo": self.can_undo(),
             # 自动模式：off / hers（只自动她的回合）/ both（双方都自动，看两家打）
+            "playPaused": self._play_paused,
             "autoMode": str(values.get("auto_mode") or "off"),
             "decisionDriver": self.decision_driver(),
             "agentDecision": self._agent_turns.public(),
@@ -944,6 +987,8 @@ class BoardgameService:
             data = json.loads(path.read_text(encoding="utf-8"))
             game = restore_game(data)
             action_protocol.restore_protocol(self, data.get("_service"))
+            service_data = data.get("_service")
+            self._play_paused = isinstance(service_data, dict) and service_data.get("playPaused") is True
             return game
         except GameError:
             # 旧版本的存档（地图结构或经济数值改过）不再兼容。**一定要在网页上说一句**：
@@ -983,7 +1028,7 @@ class BoardgameService:
         # Use the same directory so os.replace stays on one filesystem; close
         # the temporary file before replacing it (required on Windows).
         data = self._game.to_dict()
-        data["_service"] = action_protocol.protocol_state(self)
+        data["_service"] = {**action_protocol.protocol_state(self), "playPaused": self._play_paused}
         payload = json.dumps(data, ensure_ascii=False)
         temporary = None
         try:
@@ -1012,6 +1057,20 @@ class BoardgameService:
         # 用户在网页上动过手了：主动搭话要避开这种时刻（他正在玩，别插嘴）
         self._busy_at = time.time()
         try:
+            if action in ("pause_play", "resume_play"):
+                paused = action == "pause_play"
+                if paused and self._game is None:
+                    raise GameError("当前没有进行中的对局，不能暂停。")
+                if self._play_paused != paused:
+                    self._play_paused = paused
+                    self._version += 1  # Fence late moves, without changing game identity.
+                    self._agent_turns.public()  # Revoke old capabilities; never mint a new one.
+                    self._save()
+                return {"ok": True, "playPaused": self._play_paused,
+                        "version": self._version, "gameSeq": self._game_seq,
+                        "autoMode": str(self._config.get().get("auto_mode") or "off"),
+                        "status": ("对局已暂停；存档、待确认结果与待决策均保留，可继续或显式结束/重开。"
+                                   if paused else "对局已恢复；保留原自动模式，等待棋盘按原流程请求下一步。")}
             # 冷启动兜底：网页上直接操作时如果还没有对局，就先自己开一局。
             # 这样"模型没调用工具"也不影响玩——网页自己就能开局。
             if (self._game is None and action in ("roll", "decide", "act_sakura", "place", "auto")
@@ -1049,6 +1108,8 @@ class BoardgameService:
                         **({"agentDecision": result["agentDecision"]} if "agentDecision" in result else {})}
             if action == "cancel_agent":
                 return self._agent_turns.cancel(arguments.get("id"))
+            if action == "agent_fallback":
+                return self._agent_turns.fallback(arguments.get("id"))
             if action == "set_decision_driver":
                 driver = str(arguments.get("driver") or "")
                 if driver not in ("agent", "algorithm"):
@@ -1533,7 +1594,7 @@ class BoardgameService:
             return False
         with self._action_lock:
             game = self._game
-            if game is None or game.winner or getattr(game, "draw", False):
+            if self._play_paused or game is None or game.winner or getattr(game, "draw", False):
                 return False
             # 闲聊不能抢角色待行动的通道；只读原始 ticket，不刷新/作废 token。
             ticket = self._agent_turns.ticket
@@ -1680,6 +1741,7 @@ class BoardgameService:
             theme_id=theme_id,
         )
         self._game = game
+        self._play_paused = False
         self._last_event = None  # 新局不能继承旧移动；相同骰点/路径否则会被网页误判为已播过。
         self._game_seq = getattr(self, "_game_seq", 0) + 1   # 网页靠它认出"新的一局"（开局弹选棋子）
         self._snapshots.clear()                    # 新对局：旧的悔棋快照作废
@@ -1730,12 +1792,14 @@ class BoardgameService:
         if self._game is None:
             return {
                 "active": False,
+                "playPaused": self._play_paused,
                 "status": "当前没有进行中的对局。可以先问用户想玩什么，再调用 boardgame_start。",
                 "board_url": self.board_url,
             }
         game = self._game
         result: dict[str, Any] = {
             "active": True,
+            "playPaused": self._play_paused,
             "game": game.kind,
             "status": game.summary(),
             "winner": game.winner,
@@ -1781,6 +1845,7 @@ class BoardgameService:
         if result.get("dice"):
             # path 供网页播放棋子逐格移动的动画
             self._last_event = {"kind": "move", "player": player, "dice": result["dice"],
+                                "diceTurn": self._game.dice_turn,
                                 "path": list(result.get("path") or [])}
         self._touch(result.get("story"), status)
         # 工具指令只放进工具结果的 hint 字段（给模型看），status/对局记录里保持纯播报
@@ -1852,9 +1917,18 @@ class BoardgameService:
             status += f"轮到 {PLAYER_LABEL[result['next']]}。"
         elif self._game._walk:
             status += f"还剩 {self._game._walk['steps_left']} 步没走完。"
-        # 岔路选向后的继续行走也要播动画：把走过的路径交给网页
+        # 同一掷骰的连续选择可早于网页下一次poll；保留骰点及完整轨迹。
         if result.get("path") and len(result["path"]) >= 2:
-            self._last_event = {"kind": "move", "player": player, "path": list(result["path"])}
+            previous = self._last_event or {}
+            dice = result.get("dice")
+            if (dice is None and pending.get("type") == "route"
+                    and previous.get("player") == player
+                    and previous.get("diceTurn") == self._game.dice_turn):
+                dice = previous.get("dice")
+            self._last_event = {"kind": "move", "player": player,
+                                "diceTurn": self._game.dice_turn, "path": list(result["path"])}
+            if dice is not None:
+                self._last_event["dice"] = dice
         self._touch(result["story"], status)
         hint = self._pending_hint(result)
         return {**result, "status": status, "board_url": self.board_url, **({"hint": hint} if hint else {})}
@@ -1908,6 +1982,7 @@ class BoardgameService:
         elif getattr(self._game, "draw", False):
             summary += "结果：和棋。"
         self._game = None
+        self._play_paused = False
         self._last_event = None
         transaction = getattr(self, "_action_transaction", None)
         if transaction is not None:
@@ -1973,11 +2048,10 @@ class BoardgameService:
     # ---- Prompt 上下文 ----------------------------------------------
 
     def context_fragment(self) -> str:
-        """每轮注入的上下文。
+        """完整只读快照；注册 builder 决定本轮是否需要注入。
 
-        注意：**没有对局时也要返回内容**——必须把棋盘地址塞进她的上下文里。
-        之前没对局就返回空字符串，结果"模型不调用工具"时她连地址都拿不到，
-        只能凭想象说"棋盘应该已经打开了"。
+        直接调用时即使没有对局也返回身份、规则和棋盘地址，
+        保证用户明确问棋盘在哪时，不调用工具也能拿到真实地址。
         """
         url = self.board_url
         style = self.persona_text()
@@ -2083,7 +2157,7 @@ class BoardgamePlugin:
 
         register(
             "boardgame_agent_state",
-            "仅当本次棋盘主动决策请求含有效token时使用；普通聊天/复盘没有token不得调用，"
+            "仅当本次棋盘主动决策请求或commit返回的continuation含有效token时使用；普通聊天/复盘没有token不得调用，"
             "不填none/null，不猜测、不沿用旧token，不为核实状态调用。"
             "真实Agent取得本次token绑定的权威棋盘与唯一合法动作；必须在提交前读取。",
             {"token": {"type": "string", "description": "本次主动请求的一次性token"}},
@@ -2091,12 +2165,13 @@ class BoardgamePlugin:
         )
         register(
             "boardgame_agent_commit",
-            "仅当本次棋盘主动决策请求含有效token时使用；普通聊天/复盘没有token不得调用，"
+            "仅当本次棋盘主动决策请求或commit返回的continuation含有效token时使用；普通聊天/复盘没有token不得调用，"
             "不填none/null，不猜测、不沿用旧token，不为核实状态调用。"
             "真实Agent执行本次token允许的一次棋步。只控制sakura，必须严格使用state的legalAction。"
             "place必须给row/col；decide的arguments.action必须是options之一，"
             '例如action="decide", arguments={"action":"buy_draw"}（仅当options含buy_draw），不是choice。'
-            "roll不得指定骰点。失败/过期立即停止，不可改用旧工具或算法。相同token相同参数重复仅返回原结果。",
+            "roll不得指定骰点。成功结果有continuation时用新token继续state和commit，完成自己的待选分支后再短解说；"
+            "没有continuation就停止，不自行开始下一次掷骰。失败/过期立即停止，不可改用旧工具或算法。相同token相同参数重复仅返回原结果。",
             {"token": {"type": "string"},
              "action": {"type": "string", "enum": ["roll", "decide", "place", "tower_step", "tower_finish"]},
              "arguments": {
@@ -2201,7 +2276,25 @@ class BoardgamePlugin:
 
         context_host = context.get("sakura.host.context")
 
-        def build_context(_request: Mapping[str, Any]) -> list[dict[str, Any]]:
+        def build_context(request: Mapping[str, Any]) -> list[dict[str, Any]]:
+            # 只看本次输入，不由旧存档、页面可见性、历史消息或事件类型续开话题。
+            # 这是事实注入门控，不限制角色在闲聊里自然提起过去的经历。
+            current = request.get("current_input")
+            if not isinstance(current, str) or not current.strip():
+                return []
+            current = current.strip()
+            plugin_request = current.startswith((
+                "（桌游播报：", "【棋盘插件主动决策请求，不是用户消息】",
+            ))
+            board_topic = any(word in current for word in (
+                "桌游", "棋盘", "五子棋", "大富翁", "黑列车", "掷骰", "骰子", "票根",
+                "下棋", "走棋", "棋局", "棋子", "棋谱", "落子", "悔棋", "对弈",
+            )) or re.search(
+                r"\b(?:board\s*games?|gomoku|five[ -]in[ -]a[ -]row|monopoly|"
+                r"black\s+train|ticket\s+stubs?|dice)\b", current, re.IGNORECASE,
+            ) is not None
+            if not (plugin_request or board_topic):
+                return []
             content = service.context_fragment()
             if not content:
                 return []
@@ -2216,7 +2309,7 @@ class BoardgamePlugin:
         context_host.register(
             {
                 "providerId": "local.sakura.boardgame.state",
-                "description": "对局进行中时，把权威棋盘快照、轮次和最近动态注入 Prompt。",
+                "description": "仅当前输入明确涉及桌游或本插件主动请求时，提供完整权威棋盘快照。",
                 "order": 70,
                 "enabled": True,
             },

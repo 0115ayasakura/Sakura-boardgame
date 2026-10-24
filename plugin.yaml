@@ -3,7 +3,7 @@ id: local.sakura.boardgame
 name: 棋盘游戏
 author: local
 description: 让当前角色和你玩双人回合制小游戏——大富翁（第二横滨市城市地图 / 格子棋盘）和五子棋，引擎管规则，角色 Agent 选择行动并解说（可显式切换本地算法）。名字、立绘、棋风与桌游引导都跟随当前角色，换角色不用改角色卡。
-version: 1.0.2-preview
+version: 1.0.3-pre
 min_app_version: 1.3.6
 entry: plugin:BoardgamePlugin
 enabled: false
