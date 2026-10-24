@@ -1,4 +1,4 @@
-# Sakura 棋盘游戏 · v1.0.3-pre
+# Sakura 棋盘游戏 · v1.0.3 Preview
 
 适用于 [Sakura](https://github.com/Rvosy/Sakura) **1.3.6 及以上**的可选插件。支持大富翁和五子棋：**引擎执行规则与结算，当前角色的真实 Agent 选择行动并解说**。角色姓名、立绘及引导跟随当前角色。
 
